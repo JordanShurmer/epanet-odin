@@ -27,7 +27,7 @@ for a in "$@"; do
 done
 
 ODIN=${ODIN:-odin}
-SWAP=${SWAP:-linsolve}
+SWAP=${SWAP:-"linsolve createsparse"}
 TOL=${TOL:-1e-9}
 EP=epanet/EPANET
 OD=epanet/odin
@@ -47,6 +47,29 @@ fi
 
 rm -rf "$B"
 mkdir -p "$B/c" "$B/odin"
+
+# A generated fixture the real networks are too small for: a 40×40 grid of
+# junctions (1600 rows, 3120 pipes) fed from one reservoir, with a strip of
+# parallel pipes and a pump, so the ordering, the fill-in and the parallel-link
+# folding all have real work to do.
+grid_inp() {
+    awk -v n="$1" 'BEGIN {
+        print "[TITLE]\ngrid " n "x" n "\n\n[JUNCTIONS]"
+        for (i = 0; i < n; i++) for (j = 0; j < n; j++)
+            printf "J%d-%d %d %g\n", i, j, 500 - i - j, 0.3 + ((i * 7 + j * 3) % 5) / 10
+        print "\n[RESERVOIRS]\nR1 700\n\n[PIPES]"
+        for (i = 0; i < n; i++) for (j = 0; j < n; j++) {
+            if (j + 1 < n) printf "H%d-%d J%d-%d J%d-%d 800 8 110 0 Open\n", i, j, i, j, i, j + 1
+            if (i + 1 < n) printf "V%d-%d J%d-%d J%d-%d 800 8 110 0 Open\n", i, j, i, j, i + 1, j
+        }
+        for (j = 0; j + 1 < n; j += 3) printf "P%d J%d-%d J%d-%d 800 6 100 0 Open\n", j, 5, j, 5, j + 1
+        print "\n[PUMPS]\nPU1 R1 J0-0 HEAD C1\n\n[CURVES]\nC1 0 150\nC1 3000 100\nC1 6000 30"
+        print "\n[OPTIONS]\nUnits GPM\nHeadloss H-W\nTrials 60\nAccuracy 0.001"
+        print "\n[TIMES]\nDuration 0\n\n[END]"
+    }'
+}
+grid_inp 40 >"$B/grid40.inp"
+FIXTURES="$FIXTURES $B/grid40.inp"
 
 # ── build ───────────────────────────────────────────────────────────────
 note "compiling $EP/src"
