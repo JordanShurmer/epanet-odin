@@ -3,10 +3,10 @@
 A second face for the engine, beside the toolkit (`api/`, EPANET's `EN_*`
 for C programs). This one is for Odin programs: tables in, tables out, one
 proc per step of the job, errors as values. It is what the `epanet` package
-exports; the `EN_*` library keeps working over the same `Project`.
+exports; the `EN_*` library keeps working over the same engine.
 
-Rung numbers in the margins are the [ponytail](https://github.com/DietrichGebert/ponytail)
-ladder (bywater-mill's `PONYTAIL.md`): where each choice stopped.
+Rung numbers are the [ponytail](https://github.com/DietrichGebert/ponytail)
+ladder (bywater-mill's `PONYTAIL.md`): where a choice stopped.
 
 ## What it is for
 
@@ -20,78 +20,99 @@ bywater-mill, the first user, does three things with EPANET, all through
 - re-solves in a loop with one number changed (fire flow: a demand).
 
 The toolkit's shape, a handle plus an index plus a property code plus an
-out-parameter, is C's. In Odin the same work is three tables and three
-procs.
+out-parameter, is C's. In Odin the same work is two tables and a loop.
 
 ## The shape
 
-Three structs, each plain data. Nothing hides behind a method.
-
-| | What it is | Units | Who writes it |
-|---|---|---|---|
-| **`Spec`** | the network as written: ids, kinds, values, references by id. The `.inp` file as a struct. | the user's | the program, or `load` |
-| **`Project`** | the network as solved: indexes, one array per field, the run state. Already in the package. | internal (ft, cfs, s) | `build` |
-| **`Results`** | what came out: every reporting period, every node and link. | the user's | `simulate` |
-
 ```
-   your tables ──► Spec ──build──► Project ──simulate──► Results
-                    ▲                 │   ▲
-                load │        run_step│   │read_frame
-                    │                 ▼   │
-                 .inp file         (the engine's arrays)
+   your tables ──► Model ──simulate──► Results
+                     │  ▲
+                 load│  │write_inp              sim_begin(model) ─► Sim ─► sim_step ─► read_frame
+                     ▼  │
+                  .inp file
 ```
 
-A program keeps a `Spec` as its model, edits it, builds, runs, reads.
-There is no `add_node` on a `Project`: an edit is an edit to the `Spec`
-and a rebuild. (rung 1: EPANET's `EN_addnode`/`EN_deletenode` are a few
-hundred lines of index fix-ups; a rebuild is one call and bywater-mill
-rebuilds from scratch per run already.)
+| | What it is | Units |
+|---|---|---|
+| **`Model`** | the network as written: one `Entity` per component, ids as strings, references by id. The `.inp` file as data. | the modeller's |
+| **`Results`** | what came out: every reporting period, every node and link. | the modeller's |
+| **`Sim`** | a run in progress, for a program that steps or changes a number between solves. The engine's arrays, readable. | internal (ft, cfs, s) |
 
-## Spec
+A program keeps a `Model`, edits it, simulates, reads. There is no handle
+to a half-built network and no `add_node`: an edit is an edit to a table,
+and the next `simulate` sees it. (rung 1: EPANET's `EN_addnode` and
+`EN_deletenode` are a few hundred lines of index fix-ups for a thing a
+rebuild does in one call, and bywater-mill rebuilds per run already.)
+
+There is no Project. EPANET's `Project` is the toolkit's handle: the
+network, the run state, the open files, the report's line count and the
+parser's flags in one struct, because a C API needs one pointer. The Odin
+face carries none of that. Inside the package today's `Project` splits the
+same way: the engine's part becomes `Sim`; the files, the report state and
+the `EN_*` semantics move to `api/`, whose handle is a `Sim` plus those.
+The report writers take a `Sim` and a `^Report` that is nil when no one
+asked for a report.
+
+## Model
 
 ```odin
-Spec :: struct {
+Model :: struct {
 	title:    [3]string,
-	nodes:    []Node,
-	links:    []Link,
-	patterns: []Pattern,
-	curves:   []Curve,
-	controls: []Control,
+	entities: []Entity,   // every node and link, in the order written
+	patterns: []Pattern,  // series: a cycle of multipliers
+	curves:   []Curve,    // series: x against y
+	controls: []Control,  // statements
 	rules:    []Rule,
 	options:  Options,
-	times:    Times_Spec,
-	report:   Report_Spec,
-	problems: []Problem, // what load could not read; empty when the file was clean
+	times:    Times,
+	problems: []Problem,  // what load could not read; empty when the file was clean
 }
 ```
 
-**One fat struct per kind of thing**, as the `.inp` has one line per thing
-and bywater-mill has one `Entity`. Unused fields stay zero. (CLAUDE.md:
-fat structs over polymorphism.)
+**One fat struct for every component.** A junction, a reservoir, a tank, a
+pipe, a pump and a valve are one `Entity` with a `kind`; unused fields
+stay zero. It is the `.inp` file's row and bywater-mill's `Entity`, so a
+program's own table maps one to one. Patterns and curves are series and
+controls and rules are statements: those keep their own small shapes.
 
 ```odin
-Node_Kind :: enum { JUNCTION, RESERVOIR, TANK }
+Kind :: enum { JUNCTION, RESERVOIR, TANK, PIPE, PUMP, VALVE }
+Valve_Type :: enum { PRV, PSV, PBV, FCV, TCV, GPV, PCV }
 
-Node :: struct {
-	id:        string,
-	kind:      Node_Kind,
-	elevation: f64,
-	x, y:      f64, // MISSING when the file had none
-	// junction
-	demands:   []Demand, // the first is the one [JUNCTIONS] gives
-	emitter:   f64,
-	// reservoir
-	head_pattern: string,
-	// tank
-	init_level, min_level, max_level, diameter, min_volume: f64,
+Entity :: struct {
+	id:       string,
+	kind:     Kind,
+	// where it is (what the map wants; the engine ignores it)
+	x, y:     f64,       // MISSING when the file had none
+	vertices: [][2]f64,  // a link's bends
+	// a node
+	elevation:    f64,
+	demands:      []Demand, // a junction's; the first is the one [JUNCTIONS] gives
+	emitter:      f64,
+	head_pattern: string,   // a reservoir's
+	init_level, min_level, max_level, min_volume: f64, // a tank's
 	volume_curve: string,
 	overflow:     bool,
 	mixing:       Mix_Model,
-	mixing_fraction: f64, // 1 when not given
-	bulk_coeff:   f64,    // MISSING = the global one
-	// quality
+	mixing_fraction: f64,   // 1 when not given
 	init_quality: f64,
-	source:       Source, // kind == .NONE when there is none
+	source:       Source,   // kind == .NONE when there is none
+	// a link
+	from, to:     string,
+	length, roughness, minor_loss: f64,
+	diameter:     f64,      // a pipe's, a valve's; a tank's too
+	bulk_coeff, wall_coeff: f64, // a pipe's; bulk_coeff a tank's too. MISSING = the global one
+	leak_area, leak_expansion: f64,
+	check_valve:  bool,     // a pipe with a CV
+	power:        f64,      // a constant-power pump; 0 = none
+	head_curve:   string,
+	speed:        f64,      // 1 when not given
+	speed_pattern, energy_pattern, efficiency_curve: string,
+	energy_price: f64,
+	valve:        Valve_Type,
+	setting:      f64,
+	loss_curve:   string,   // a GPV's head loss curve, a PCV's position curve
+	status:       Status,   // OPEN, CLOSED, or ACTIVE for a valve with a setting
 	comment, tag: string,
 }
 
@@ -99,51 +120,29 @@ Demand :: struct { base: f64, pattern, name: string }
 Source :: struct { kind: Source_Kind, strength: f64, pattern: string }
 Source_Kind :: enum { NONE, CONCEN, MASS, SETPOINT, FLOWPACED }
 
-Link :: struct {
-	id:       string,
-	kind:     Link_Type, // the engine's enum: CVPIPE, PIPE, PUMP, PRV … PCV
-	from, to: string,
-	// pipe
-	length, diameter, roughness, minor_loss: f64,
-	bulk_coeff, wall_coeff: f64, // MISSING = the global one
-	leak_area, leak_expansion: f64,
-	// pump
-	power:        f64,   // constant-power pump, 0 = none
-	head_curve:   string,
-	speed:        f64,   // 1 when not given
-	speed_pattern, energy_pattern, efficiency_curve: string,
-	energy_price: f64,
-	// valve
-	setting:      f64,
-	loss_curve:   string, // GPV's head loss curve, PCV's position curve
-	// any
-	status:   Status, // OPEN, CLOSED, or ACTIVE for a valve with a setting
-	vertices: [][2]f64,
-	comment, tag: string,
-}
-
 Pattern :: struct { id: string, factors: []f64, comment: string }
 Curve   :: struct { id: string, kind: Curve_Type, x, y: []f64, comment: string }
 
 Control :: struct {
 	link:    string,
-	status:  Status,  // OPEN / CLOSED, or ACTIVE when `setting` applies
+	status:  Status,       // OPEN / CLOSED, or ACTIVE when `setting` applies
 	setting: f64,
 	kind:    Control_Type, // LOWLEVEL, HILEVEL, TIMER, TIMEOFDAY
-	node:    string,  // the level's node
-	level:   f64,     // or
-	time:    i64,     // seconds
+	node:    string,       // the level's node
+	level:   f64,          // or
+	time:    i64,          // seconds
 	enabled: bool,
 }
 
 // A rule stays text: EPANET's grammar, one clause per line. The parser
-// already reads it; a struct of premises and actions would be a second
-// grammar to keep in step. (rung 1)
+// reads it; a struct of premises and actions would be a second grammar
+// to keep in step. (rung 1)
 Rule :: struct { text: string }
 ```
 
 Options are one struct with typed fields, EPANET's names, EPANET's
-defaults as a constant to start from:
+defaults as a constant to start from. `MISSING` (`-1e10`) means "not
+given" where EPANET means that.
 
 ```odin
 Options :: struct {
@@ -153,7 +152,7 @@ Options :: struct {
 	trials:           int,              // 200
 	accuracy:         f64,              // 0.001
 	head_error, flow_change, damp_limit: f64,
-	check_freq, max_check:  int,        // 2, 10
+	check_freq, max_check: int,         // 2, 10
 	unbalanced:       Unbalanced,       // {.STOP} or {.CONTINUE, extra_trials}
 	demand_model:     Demand_Model,     // .DDA
 	min_pressure, required_pressure, pressure_exponent: f64,
@@ -166,158 +165,137 @@ Options :: struct {
 	quality:          Quality_Spec,     // kind, chemical name and units, trace node, tolerance
 	reactions:        Reactions_Spec,   // orders, global bulk and wall, limiting potential, roughness correlation
 	energy:           Energy_Spec,      // global efficiency, price, price pattern, demand charge
-	hydraulics_file:  Hyd_File_Spec,    // {.SCRATCH} / {.SAVE, name} / {.USE, name}
+	report:           Report_Spec,      // [REPORT], kept for write_inp; the Odin face writes no report
 }
-
 DEFAULT_OPTIONS :: Options{ flow_units = .GPM, headloss = .HW, trials = 200, accuracy = 0.001, … }
 
-Times_Spec :: struct {
+Times :: struct {
 	duration, hydraulic_step, quality_step, pattern_step, pattern_start,
 	report_step, report_start, rule_step, start_clocktime: i64, // seconds
 	statistic: Time_Stat,
 }
-DEFAULT_TIMES :: Times_Spec{ hydraulic_step = 3600, pattern_step = 3600, report_step = 3600 }
+DEFAULT_TIMES :: Times{ hydraulic_step = 3600, pattern_step = 3600, report_step = 3600 }
 ```
 
-`Report_Spec` is `[REPORT]`: page size, status, summary, energy, which
-nodes and links, each field's precision and limits. It only matters when
-a report file is asked for.
-
-### Procs on a Spec
+### Procs on a Model
 
 ```odin
-// The file as a Spec. A file with bad lines still comes back, with
+// The file as a Model. A file with bad lines still comes back, with
 // problems filled and err == .Input_Errors (EPANET's 200); the engine
 // refuses it, a program can show it.
-load       :: proc(path: string, allocator := context.allocator) -> (spec: Spec, err: Error)
-parse      :: proc(text: string, allocator := context.allocator) -> (spec: Spec, err: Error)
-write_inp  :: proc(spec: Spec, path: string) -> Error   // the file back, every section
-delete_spec :: proc(spec: Spec)                          // what load allocated
+load         :: proc(path: string, allocator := context.allocator) -> (model: Model, err: Error)
+parse        :: proc(text: string, allocator := context.allocator) -> (model: Model, err: Error)
+write_inp    :: proc(model: Model, path: string) -> Error   // the file back, every section
+delete_model :: proc(model: Model)                           // what load allocated
 Problem :: struct { line: int, code: Error, text: string }
 ```
 
 `load` is the parser that exists (`parse.odin`), its second half turned
-from "token to array slot" into "token to Spec field". The dump comparison
-against EPANET's reader keeps proving it: `build(load(f))` must dump the
-same as today's `parse_inp(f)`.
+from "token to array slot" into "token to Entity field".
 
-## Project
-
-The struct the package already has. `build` makes one; `destroy` frees it
-(its arena goes with it).
+## Results
 
 ```odin
-build   :: proc(spec: Spec) -> (p: ^Project, err: Error)
-destroy :: proc(p: ^Project)
-```
-
-`build` is the parser's tail (`finish_tables`, `adjust_data`,
-`init_tanks`, `init_units`, `convert_units`) and the validator, over a
-Spec instead of tokens. Two promises about indexes, so a program can keep
-its own maps instead of asking:
-
-- **node i** is the i-th junction of `spec.nodes` while i ≤ the junction
-  count, then the tanks and reservoirs in their order (EPANET's layout);
-  **link k** is `spec.links[k-1]`. Both 1-based, as everywhere in the
-  package.
-- `node_index(p, id)` and `link_index(p, id)` answer `(index, found)`.
-
-A `Project`'s arrays are open to read: `p.net.el[i]`, `p.hyd.head[i]`,
-`p.hyd.flow[k]`, internal units. That is the data-oriented door; the
-procs below are the ergonomic one.
-
-### Knobs that do not change the structure
-
-The loop cases: fire flow changes one demand and solves again; a what-if
-closes a pipe. These write the arrays in place, in the user's units, with
-no rebuild. Anything else is a Spec edit.
-
-```odin
-set_base_demand  :: proc(p: ^Project, node: int, demand: f64, category := 1)
-set_demand_multiplier :: proc(p: ^Project, m: f64)
-set_link_status  :: proc(p: ^Project, link: int, status: Status)
-set_link_setting :: proc(p: ^Project, link: int, setting: f64)
-set_tank_level   :: proc(p: ^Project, node: int, level: f64)
-set_pattern      :: proc(p: ^Project, pattern: int, factors: []f64)
-set_times        :: proc(p: ^Project, t: Times_Spec)
-```
-
-(rung 2: `set_link_status`, `set_link_setting` and the pattern tables are
-in `hydraul.odin` already; these add the unit conversion.)
-
-## Running
-
-### All at once
-
-```odin
-Run_Options :: struct {
-	quality: bool,   // true: water quality as the Spec asks (NONE runs nothing)
-	files:   Files,  // empty strings: no report, no output, no hydraulics file
-}
-Files :: struct { report, output, hydraulics: string }
-
-simulate :: proc(p: ^Project, opts := Run_Options{quality = true},
-                 allocator := context.allocator) -> (r: Results, warn: Warning, err: Error)
+simulate :: proc(model: Model, opts := Sim_Options{}, allocator := context.allocator) -> (r: Results, warn: Warning, err: Error)
 delete_results :: proc(r: Results)
-```
 
-```odin
+Sim_Options :: struct {
+	skip_quality: bool, // hydraulics only, whatever model.options.quality says
+}
+
 Results :: struct {
 	periods:  []i64,        // reporting times, seconds (report start, every report step)
 	units:    Units,        // the texts: "gpm", "psi", "ft" …
-	node:     Node_Table,   // one slice per period, each over every node (0-based)
+	node:     Node_Table,   // one slice per period, each over every node
 	link:     Link_Table,
 	warnings: []Warning,    // one per period
-	energy:   []Pump_Usage, // one per pump, the energy table's row
+	energy:   []Pump_Usage, // one per pump: the energy table's row
 	mass_balance: Mass_Balance,
 }
 Node_Table :: struct { demand, head, pressure, quality: [][]f64 }
 Link_Table :: struct { flow, velocity, headloss, quality, status, setting, reaction, friction: [][]f64 }
 ```
 
-`r.node.pressure[k][i]` is node i+1's pressure at `r.periods[k]`. Each
-`[][]f64` is one flat allocation with a slice header per period, so a
-column is contiguous and a program that wants the raw block has it
-(`raw_data(r.node.pressure[0])`, `len(periods) × nnodes`). The eight link
-and four node variables are the output file's; `simulate` is the run EPANET
-makes, with the table kept in memory instead of (or as well as) written
-to the file.
+`r.node.pressure[k][i]` is node i's pressure at `r.periods[k]`, node i
+being the i-th node of `model.entities` counting nodes only; link k the
+k-th link the same way. Each `[][]f64` is one flat allocation with a slice
+header per period, so a column is contiguous and a program that wants the
+block has it (`raw_data(r.node.pressure[0])`, `len(periods) × nodes`).
+The four node and eight link variables are the ones EPANET's output file
+holds; `simulate` is the run EPANET makes, with the table kept in memory
+instead of written to a file.
 
-### Step by step
+## Sim
 
 For the timeline, which wants every hydraulic event, and fire flow, which
-changes a number between solves.
+changes a number between solves. A run in progress is a value the caller
+owns; `simulate` is built from these and does nothing a program cannot.
 
 ```odin
-Run :: struct { p: ^Project, … }   // an open run; one per Project at a time
+Sim :: struct {
+	net:   Network,     // the model as solved: one array per field, 1-based, internal units
+	hyd:   Hydraulics,  // the hydraulic state: head, flow, status, setting, the solver's settings
+	q:     Quality,     // the quality state
+	times: Times_State, // the clock
+	m:     Smatrix,     // the solver's matrix
+	ids:   Ids,         // node and link ids, and the maps back to indexes
+	ucf:   [Field]f64,  // internal units to the model's
+	…
+}
 
-run_begin :: proc(p: ^Project, opts := Run_Options{quality = true}) -> (r: Run, err: Error)
-run_step  :: proc(r: ^Run) -> (t: i64, warn: Warning, done: bool, err: Error)
-run_end   :: proc(r: ^Run)
+sim_begin :: proc(model: Model, opts := Sim_Options{}, allocator := context.allocator) -> (sim: Sim, err: Error)
+sim_step  :: proc(sim: ^Sim) -> (t: i64, warn: Warning, done: bool, err: Error)
+sim_end   :: proc(sim: ^Sim)
+
+node_index :: proc(sim: ^Sim, id: string) -> (index: int, found: bool)
+link_index :: proc(sim: ^Sim, id: string) -> (index: int, found: bool)
 ```
 
-`run_step` solves the period at the current clock, advances to the next
-hydraulic event (a control, a tank filling, a pattern step) and reports the
-time it solved for; `done` once the clock has passed the duration. Between
-steps the engine's state is readable:
+`sim_begin` converts and indexes the model (the parser's tail: units,
+tanks, the pump curves, the validation) and opens the solvers.
+`sim_step` solves the period at the current clock, advances to the next
+hydraulic event (a control, a tank filling, a pattern step) and reports
+the time it solved for; `done` once the clock has passed the duration.
+`Network`, `Hydraulics` and `Quality` are the structs the engine runs on;
+they are open to read (`sim.hyd.head[i]`, feet). Two promises about
+indexes, so a program keeps its own maps: node i is the i-th junction of
+`model.entities`, then the tanks and reservoirs in their order (EPANET's
+layout); link k is the k-th link. 1-based, as everywhere in the package.
+
+Between steps the state in the model's units, into slices the caller
+owns (sized once; no allocation per step):
 
 ```odin
-// Frame is what the engine knows after a solve, in the user's units,
-// into slices the caller owns (sized by frame_make; no allocation per step).
 Frame :: struct {
 	time: i64,
 	node: Node_Row,  // demand, head, pressure, quality, tank_level: []f64
 	link: Link_Row,  // flow, velocity, headloss, quality, status, setting: []f64
 }
-frame_make  :: proc(p: ^Project, allocator := context.allocator) -> Frame
-read_frame  :: proc(r: ^Run, f: ^Frame)
+frame_make   :: proc(sim: ^Sim, allocator := context.allocator) -> Frame
+read_frame   :: proc(sim: ^Sim, f: ^Frame)
 frame_delete :: proc(f: Frame)
 ```
 
-`simulate` is `run_begin`, a loop of `run_step` + `read_frame` at the
-reporting times, `run_end`; nothing in it that a program cannot do itself.
+### Knobs
 
-### Errors and warnings
+The loop cases change a number, not the structure: a demand for fire
+flow, a pipe closed for a what-if. These write the engine's arrays in
+place, taking the model's units, with no new `sim_begin`. Anything else is
+an edit to the `Model`.
+
+```odin
+set_base_demand       :: proc(sim: ^Sim, node: int, demand: f64, category := 1)
+set_demand_multiplier :: proc(sim: ^Sim, m: f64)
+set_link_status       :: proc(sim: ^Sim, link: int, status: Status)
+set_link_setting      :: proc(sim: ^Sim, link: int, setting: f64)
+set_tank_level        :: proc(sim: ^Sim, node: int, level: f64)
+set_pattern           :: proc(sim: ^Sim, pattern: int, factors: []f64)
+```
+
+(rung 2: `set_link_status`, `set_link_setting` and the pattern tables are
+in `hydraul.odin`; these add the unit conversion.)
+
+## Errors and warnings
 
 ```odin
 Error :: enum i32 {
@@ -325,7 +303,7 @@ Error :: enum i32 {
 	Out_Of_Memory = 101, No_Network = 102, Hydraulics_Not_Open = 103,
 	No_Hydraulics = 104, Quality_Not_Open = 105, No_Results = 106,
 	Unsolvable = 110, Input_Errors = 200, Syntax = 201, Bad_Number = 202,
-	… every EPANET code, by its EPANET name, through 310 and the 25x function-call codes …
+	… every EPANET code, by its EPANET name …
 }
 Warning :: enum i32 { None, Unbalanced = 1, Unstable, Disconnected, Pumps, Valves, Negative_Pressure }
 
@@ -333,34 +311,23 @@ error_message :: proc(err: Error) -> string   // EPANET's text (errors.odin, alr
 ```
 
 EPANET's numbers stay the values, so a code read from a report, a C
-program or the toolkit means the same thing. `err != nil` is the test
-(`.None` is the zero value).
-
-## Reading a Spec out of a Project
-
-```odin
-spec_of :: proc(p: ^Project, allocator := context.allocator) -> Spec
-```
-
-For a program that only has the `Project` (the toolkit built it, or it
-wants the converted values back in its own units). Mostly `convert_units`
-run backwards; the arena holds the names.
+program or the toolkit means the same thing. `err != nil` is the test.
 
 ## What the toolkit maps to
 
 | `EN_*` | here |
 |---|---|
-| `EN_createproject`, `EN_open`, `EN_close`, `EN_deleteproject` | `load`, `build`, `destroy` |
-| `EN_init` + `EN_add*` + `EN_set*data` | fill a `Spec`, `build` |
-| `EN_set*value`, `EN_setoption`, `EN_settimeparam` | edit the `Spec`, rebuild; or a knob |
-| `EN_solveH`, `EN_solveQ`, `EN_runH`/`EN_nextH`/`EN_runQ`/`EN_nextQ` | `simulate`; `run_begin`/`run_step`/`run_end` |
+| `EN_createproject`, `EN_open`, `EN_close`, `EN_deleteproject` | `load`, `delete_model` |
+| `EN_init` + `EN_add*` + `EN_set*data` | fill a `Model` |
+| `EN_set*value`, `EN_setoption`, `EN_settimeparam` | edit the `Model`; or a knob on a `Sim` |
+| `EN_solveH`, `EN_solveQ` | `simulate` |
+| `EN_openH` … `EN_nextQ` | `sim_begin`, `sim_step`, `sim_end` |
 | `EN_getnodevalue`, `EN_getlinkvalue` (results) | `Results`, `Frame` |
-| `EN_getnodevalue`, `EN_getlinkvalue` (data) | the `Spec` the program holds; `spec_of` |
-| `EN_getcount`, `EN_get*index`, `EN_get*id` | `len(spec.nodes)`, `node_index`, `spec.nodes[i].id` |
-| `EN_report`, `EN_savehydfile` | `Run_Options.files` |
+| `EN_getnodevalue`, `EN_getlinkvalue` (data) | the `Model` the program holds |
+| `EN_getcount`, `EN_get*index`, `EN_get*id` | `len(model.entities)`, `node_index`, `entity.id` |
 | `EN_saveinpfile` | `write_inp` |
 | `EN_geterror` | `error_message` |
-| `EN_setreportcallback` | nothing: the report is a file or not at all (rung 1) |
+| `EN_report`, `EN_savehydfile`, `EN_setreportcallback` | nothing: the numbers come back as data (rung 1) |
 
 ## Examples
 
@@ -369,126 +336,122 @@ Load, run, read:
 ```odin
 import "epanet"
 
-spec, err := epanet.load("net1.inp")
+model, err := epanet.load("net1.inp")
 if err != nil { fmt.eprintln(epanet.error_message(err)); return }
-defer epanet.delete_spec(spec)
+defer epanet.delete_model(model)
 
-p, build_err := epanet.build(spec)
-if build_err != nil { return }
-defer epanet.destroy(p)
-
-r, warn, run_err := epanet.simulate(p)
+r, warn, run_err := epanet.simulate(model)
+if run_err != nil { return }
 defer epanet.delete_results(r)
 for t, k in r.periods {
-	fmt.printfln("%2d:00  %s  %6.2f %s", t / 3600, spec.nodes[0].id, r.node.pressure[k][0], r.units.pressure)
+	fmt.printfln("%2d:00  %s  %6.2f %s", t / 3600, model.entities[0].id, r.node.pressure[k][0], r.units.pressure)
 }
 ```
 
-A model of your own, built and solved (bywater-mill's `buildProject`):
+A model of your own (bywater-mill's `buildProject`, one append per entity):
 
 ```odin
-nodes: [dynamic]epanet.Node
-links: [dynamic]epanet.Link
+entities: [dynamic]epanet.Entity
 for ent in system.entities {
 	switch ent.kind {
 	case .JUNCTION:
-		append(&nodes, epanet.Node{id = ent.name, kind = .JUNCTION, elevation = ent.elevation,
+		append(&entities, epanet.Entity{id = ent.name, kind = .JUNCTION, elevation = ent.elevation,
 			demands = {{base = ent.base_demand, pattern = ent.pattern}}})
 	case .PIPE:
-		append(&links, epanet.Link{id = ent.name, kind = .PIPE, from = from_name, to = to_name,
+		append(&entities, epanet.Entity{id = ent.name, kind = .PIPE, from = from_name, to = to_name,
 			length = ent.length, diameter = ent.diameter, roughness = ent.roughness, status = .OPEN})
 	…
 	}
 }
-spec := epanet.Spec{nodes = nodes[:], links = links[:], options = epanet.DEFAULT_OPTIONS, times = epanet.DEFAULT_TIMES}
-spec.options.flow_units = .GPM
-spec.times.duration = 24 * 3600
-p, err := epanet.build(spec)
+model := epanet.Model{entities = entities[:], options = epanet.DEFAULT_OPTIONS, times = epanet.DEFAULT_TIMES}
+model.options.flow_units = .GPM
+model.times.duration = 24 * 3600
+r, warn, err := epanet.simulate(model)
 ```
 
-(The surface and these examples type-check as a stub package; Odin does
-not redeclare a name with `:=`, hence `build_err` and `run_err`.)
-
-Fire flow: one demand at a time, the same project:
+Fire flow: one demand at a time, one `Sim`:
 
 ```odin
-run, err := epanet.run_begin(p, {quality = false})
-defer epanet.run_end(&run)
-frame := epanet.frame_make(p)
+sim, err := epanet.sim_begin(model, {skip_quality = true})
+defer epanet.sim_end(&sim)
+frame := epanet.frame_make(&sim)
 defer epanet.frame_delete(frame)
 for node in hydrants {
-	epanet.set_base_demand(p, node, 1500)           // gpm, the Spec's units
-	_, warn, _, err := epanet.run_step(&run)
-	epanet.read_frame(&run, &frame)
+	epanet.set_base_demand(&sim, node, 1500)           // gpm, the model's units
+	_, warn, _, step_err := epanet.sim_step(&sim)
+	epanet.read_frame(&sim, &frame)
 	available[node] = frame.node.pressure[node - 1]
-	epanet.set_base_demand(p, node, 0)
+	epanet.set_base_demand(&sim, node, 0)
 }
 ```
 
 The timeline, every event, reporting frames kept:
 
 ```odin
-run, _ := epanet.run_begin(p, {})
-frame := epanet.frame_make(p)
+sim, _ := epanet.sim_begin(model)
+frame := epanet.frame_make(&sim)
 for {
-	t, warn, done, err := epanet.run_step(&run)
+	t, warn, done, err := epanet.sim_step(&sim)
 	if err != nil do break
 	if t % report_step == 0 {
-		epanet.read_frame(&run, &frame)
+		epanet.read_frame(&sim, &frame)
 		film_append(&film, t, frame.node.pressure, frame.link.flow)
 	}
 	if done do break
 }
-epanet.run_end(&run)
+epanet.sim_end(&sim)
 ```
+
+(The surface and these examples type-check as a stub package.)
 
 ## Decisions
 
-- **Spec, not an editable Project.** Edits are table edits and a rebuild;
-  no index fix-ups, no "add then set" protocol, no half-built states. The
-  cost is a rebuild per edit, which is a parse's worth of work and what the
-  first user does anyway. If a program edits in a loop and the rebuild
-  shows up, the knobs grow. (rung 7, after rung 1 cut the alternative)
-- **Fat structs, user units, ids as strings in the Spec.** The `.inp`
-  file's model, so `load` and `write_inp` are a transcription and a
-  program's own tables map one to one. Conversion happens once, in
-  `build`, as it does in EPANET.
+- **A Model and a Sim, no Project.** The data a program holds is one
+  table of entities in its own units; the run is a value that exists while
+  it runs. The toolkit's handle, with its files and flags, stays in `api/`
+  where C programs need it.
+- **One fat `Entity`.** A junction and a pump are rows of one table with
+  a kind; `diameter` serves a tank and a pipe, `bulk_coeff` a tank and a
+  pipe. No union, no case per kind in the caller's code.
+- **Edits are table edits.** No incremental editor, no index fix-ups, no
+  half-built states. The cost is a conversion per `simulate`, a parse's
+  worth of work. The knobs cover the loops.
 - **Results as `[][]f64` over one block.** Indexable without arithmetic,
   contiguous for anyone who wants the block, no per-period allocation.
 - **Rules stay text.** One grammar.
 - **EPANET's error numbers as the enum's values.** One meaning everywhere.
-- **No callbacks.** Progress is the caller's loop; the report is a file.
-- **No report by default.** The numbers come back as data; the report
-  file is there for whoever wants EPANET's paper.
-- **One `Run` per `Project`.** The engine's state is in the `Project`;
-  two runs over one would share it. A program that wants two runs at once
-  builds twice (the Spec is the shared part, and is read-only to `build`).
+- **No files, no callbacks.** The numbers come back as data. If anyone
+  wants EPANET's paper, a report written from a `Model` and a `Results` is
+  one proc later, from data, not from a run in flight.
+- **One `Sim` per `Model` at a time is not required.** A `Sim` copies
+  what it needs from the model; two sims over one model are two runs.
 
 ## Not in it
 
-- An incremental `Project` editor (`EN_add*`/`EN_delete*` with index
-  fix-ups): the toolkit's, when the editing phase ports it; the Spec is
-  the Odin way. (rung 1)
-- Progress and report callbacks. (rung 1)
-- Threads inside a run. A `Project` per thread is the model; nothing in
-  the package is global but read-only tables.
+- An incremental editor (`EN_add*`/`EN_delete*` with index fix-ups): the
+  toolkit's, when the editing phase ports it. (rung 1)
+- Report and progress callbacks, the hydraulics file, the output file.
+  (rung 1)
+- Threads inside a run. A `Sim` per thread is the model; nothing in the
+  package is global but read-only tables.
 
 ## Where it goes, in order
 
 Each step is checked the way the port has been: the same bytes as EPANET.
 
-1. **`spec.odin`** — the types, `DEFAULT_OPTIONS`, `DEFAULT_TIMES`,
-   `Error`, `Warning`. `errors.odin` gives `error_message`.
-2. **`load` and `build`** — the parser's second half writes a Spec;
-   `build` is the parser's tail over it. `parse_inp` becomes
-   `build(load(path))` and `cmd/dumpnet` keeps proving the pair against
-   EPANET's reader, byte for byte, on every fixture.
-3. **`simulate`, `run_*`, `Frame`** — over `open_hyd`, `init_hyd`,
+1. **`model.odin`** — `Model`, `Entity` and the rest of the types,
+   `DEFAULT_OPTIONS`, `DEFAULT_TIMES`, `Error`, `Warning`. The engine's
+   struct becomes `Sim`; the report and file state leave it for `api/`.
+   `errors.odin` gives `error_message`.
+2. **`load` and `sim_begin`** — the parser's second half writes a Model;
+   `sim_begin` is the parser's tail over it. `cmd/dumpnet` dumps a `Sim`
+   and keeps proving the pair against EPANET's reader, byte for byte, on
+   every fixture.
+3. **`simulate`, `sim_step`, `Frame`** — over `open_hyd`, `init_hyd`,
    `run_hyd`, `next_hyd`, `initqual`, `runqual`, `nextqual`, all there. A
    new driver, `cmd/run`, prints what `harness/run.c` prints and must
-   match `run-c` on every fixture; with `files` set, the three files too.
-4. **`write_inp`** — the file from a Spec, every section (`inpfile.c`).
-   Checked by a round trip: `load` → `write_inp` → `load` → `build` dumps
-   the same.
-5. **The knobs and `spec_of`.** Fire flow and the timeline in
-   bywater-mill move over; their smoke tests are the check.
+   match `run-c` on every fixture.
+4. **`write_inp`** — the file from a Model, every section (`inpfile.c`).
+   Checked by a round trip: `load` → `write_inp` → `load` dumps the same.
+5. **The knobs.** Fire flow and the timeline in bywater-mill move over;
+   their smoke tests are the check.

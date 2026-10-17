@@ -222,11 +222,13 @@ Ported, bit-exact on every fixture:
 
 Next, in order:
 
-11. **The Odin API** — designed in [`API.md`](API.md): a `Spec` (the
-    network as written, fat structs, the user's units), `build` to a
-    `Project`, `simulate` to `Results` as tables, `run_step` and a `Frame`
-    for a loop, a few knobs for the loop cases, `write_inp`. The toolkit
-    stays beside it for C programs.
+11. **The Odin API** — designed in [`API.md`](API.md): a `Model` (the
+    network as written: one fat `Entity` for every component, the
+    modeller's units), `simulate` to `Results` as tables, a `Sim` with
+    `sim_step` and a `Frame` for a loop, a few knobs for the loop cases,
+    `write_inp`. No Project: the engine's struct becomes `Sim`, and the
+    files, report state and `EN_*` semantics move to `api/`, which stays
+    beside it for C programs.
 12. **The editing toolkit** — `EN_set*`, `EN_add*`, `EN_delete*`,
     `EN_saveinpfile` (`inpfile.c`): a project built and changed through
     the C API, not only read from a file.
