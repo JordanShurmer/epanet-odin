@@ -66,9 +66,8 @@ headloss_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) {
 	}
 }
 
-// matrix_coeffs assembles A and F. Leakage, still C's, is called between
-// the demands and the node balances when the network leaks.
-matrix_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, hooks: ^Hooks) {
+// matrix_coeffs assembles A and F.
+matrix_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix) {
 	for i in 0 ..= net.nnodes {
 		m.aii[i] = 0
 		m.f[i] = 0
@@ -79,7 +78,7 @@ matrix_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatri
 	link_coeffs(net, hyd, m)
 	emitter_coeffs(net, hyd, m)
 	demand_coeffs(net, hyd, m)
-	if hyd.has_leakage do hooks.leakage_coeffs(hooks.ctx)
+	if hyd.has_leakage do leakage_coeffs(net, hyd, m)
 	node_coeffs(net, hyd, m)
 	valve_coeffs(net, hyd, m)
 }

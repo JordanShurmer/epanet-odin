@@ -82,7 +82,7 @@ c_ints :: proc(s: []i32) -> [^]c.int {
 Network_C :: struct {
 	nnodes, njuncs, nlinks:                      c.int,
 	ntanks, npumps, nvalves, ncontrols, ncurves: c.int,
-	el, ke:                                      [^]f64,
+	el, ke, leak_cfa, leak_cva:                  [^]f64,
 	link_type, n1, n2:                           [^]c.int,
 	diam, km, kc, r:                             [^]f64,
 	link_pump, link_valve:                       [^]c.int,
@@ -106,7 +106,7 @@ Hydraulics_C :: struct {
 	htol, qtol, hacc, head_error_limit, flow_change_limit:      f64,
 	damp_limit:                                                 f64,
 	head, node_demand, demand_flow, full_demand:                [^]f64,
-	emitter_flow, leak_flow, xflow:                             [^]f64,
+	emitter_flow, leak_flow, leak_qfa, leak_qva, xflow:         [^]f64,
 	flow, setting:                                              [^]f64,
 	status:                                                     [^]c.int,
 	p, y:                                                       [^]f64,
@@ -143,6 +143,8 @@ view_network :: proc(n: ^Network_C) -> Network {
 		ncontrols = nk,
 		el = n.el[:nn + 1],
 		ke = n.ke[:nn + 1],
+		leak_cfa = n.leak_cfa[:int(n.njuncs) + 1],
+		leak_cva = n.leak_cva[:int(n.njuncs) + 1],
 		link_type = ([^]Link_Type)(n.link_type)[:nl + 1],
 		n1 = n.n1[:nl + 1],
 		n2 = n.n2[:nl + 1],
@@ -206,6 +208,8 @@ view_hydraulics :: proc "contextless" (h: ^Hydraulics_C, nnodes, nlinks: int) ->
 		full_demand = h.full_demand[:nnodes + 1],
 		emitter_flow = h.emitter_flow[:nnodes + 1],
 		leak_flow = h.leak_flow[:nnodes + 1],
+		leak_qfa = h.leak_qfa[:nnodes + 1],
+		leak_qva = h.leak_qva[:nnodes + 1],
 		xflow = h.xflow[:nnodes + 1],
 		flow = h.flow[:nlinks + 1],
 		setting = h.setting[:nlinks + 1],
@@ -243,13 +247,13 @@ odin_headlosscoeffs :: proc "c" (n: ^Network_C, h: ^Hydraulics_C) {
 }
 
 @(export, link_name = "odin_matrixcoeffs")
-odin_matrixcoeffs :: proc "c" (n: ^Network_C, h: ^Hydraulics_C, mc: ^Matrix_C, hooks: ^Hooks) {
+odin_matrixcoeffs :: proc "c" (n: ^Network_C, h: ^Hydraulics_C, mc: ^Matrix_C) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	net := view_network(n)
 	hyd := view_hydraulics(h, net.nnodes, net.nlinks)
 	m := view_matrix(mc, net.nnodes, net.njuncs, net.nlinks)
-	matrix_coeffs(&net, &hyd, &m, hooks)
+	matrix_coeffs(&net, &hyd, &m)
 }
 
 @(export, link_name = "odin_hydsolve")

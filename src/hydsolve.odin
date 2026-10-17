@@ -44,7 +44,7 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, ho
 	for iter <= max_trials {
 		// A·H = F for the heads; H comes back in f.
 		headloss_coeffs(net, hyd)
-		matrix_coeffs(net, hyd, m, hooks)
+		matrix_coeffs(net, hyd, m)
 		errcode = linsolve(m, net.njuncs)
 
 		// Ill-conditioned: a control valve at that row is fixed and we
@@ -174,7 +174,7 @@ new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks,
 	new_link_flows(net, hyd, bal, &qsum, &dqsum)
 	new_emitter_flows(net, hyd, bal, &qsum, &dqsum)
 	new_demand_flows(net, hyd, bal, &qsum, &dqsum)
-	if hyd.has_leakage do new_leakage_flows(net, hyd, hooks, bal, &qsum, &dqsum)
+	if hyd.has_leakage do new_leakage_flows(net, hyd, bal, &qsum, &dqsum)
 
 	if qsum > hyd.hacc do return dqsum / qsum
 	return dqsum
@@ -231,9 +231,9 @@ new_emitter_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^
 	}
 }
 
-new_leakage_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks, bal: ^Balance, qsum, dqsum: ^f64) {
+new_leakage_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) {
 	for i in 1 ..= net.njuncs {
-		dq := hooks.leakage_flow_change(hooks.ctx, i32(i), hyd.relax)
+		dq := leakage_flow_change(net, hyd, i)
 		if dq == 0 do continue
 		qsum^ += abs(hyd.leak_flow[i])
 		dqsum^ += abs(dq)
@@ -303,7 +303,7 @@ has_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Ho
 	}
 	if hyd.head_error_limit > 0 && bal.max_head_error > hyd.head_error_limit do return false
 	if hyd.flow_change_limit > 0 && bal.max_flow_change > hyd.flow_change_limit do return false
-	if hyd.has_leakage && hooks.leakage_converged(hooks.ctx) == 0 do return false
+	if hyd.has_leakage && !leakage_converged(net, hyd) do return false
 	if hyd.demand_model == .PDA do return pda_converged(net, hyd, sol)
 	return true
 }

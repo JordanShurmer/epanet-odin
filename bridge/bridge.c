@@ -239,7 +239,7 @@ int createsparse(Project *pr) { return createsparse_odin(pr); }
 typedef struct {
     int nnodes, njuncs, nlinks;
     int ntanks, npumps, nvalves, ncontrols, ncurves;
-    double *el, *ke;
+    double *el, *ke, *leak_cfa, *leak_cva;
     int *link_type, *n1, *n2;
     double *diam, *km, *kc, *r;
     int *link_pump, *link_valve;
@@ -263,18 +263,15 @@ typedef struct {
     double htol, qtol, hacc, head_error_limit, flow_change_limit;
     double damp_limit;
     double *head, *node_demand, *demand_flow, *full_demand;
-    double *emitter_flow, *leak_flow, *xflow;
+    double *emitter_flow, *leak_flow, *leak_qfa, *leak_qva, *xflow;
     double *flow, *setting;
     int *status;
     double *p, *y;
 } OdinHydraulics;
 
-/* What the solver still leaves to C: leakage and the status report. */
+/* What the solver still leaves to C: the status report's lines. */
 typedef struct {
     void *ctx;
-    void (*leakage_coeffs)(void *);
-    double (*leakage_flow_change)(void *, int, double);
-    int (*leakage_converged)(void *);
     void (*write_relerr)(void *, int, double);
     void (*write_statchange)(void *, int, int, int);
     void (*write_hyderr)(void *, int);
@@ -296,7 +293,7 @@ typedef struct {
 } OdinMatrix;
 
 void odin_headlosscoeffs(OdinNetwork *n, OdinHydraulics *h);
-void odin_matrixcoeffs(OdinNetwork *n, OdinHydraulics *h, OdinMatrix *m, OdinHooks *hooks);
+void odin_matrixcoeffs(OdinNetwork *n, OdinHydraulics *h, OdinMatrix *m);
 void odin_hydsolve(OdinNetwork *n, OdinHydraulics *h, OdinMatrix *m, OdinHooks *hooks,
                    OdinSolution *out);
 
@@ -307,6 +304,9 @@ int hydsolve_c(Project *pr, int *iter, double *relerr);
 static OdinNetwork mirror;
 static int mirror_nodes, mirror_links, mirror_tanks, mirror_pumps, mirror_valves,
            mirror_controls, mirror_curves;
+/* hyd->Leakage is a struct per junction; the Odin side wants its four
+ * fields as four arrays. qfa and qva are state, copied back after a solve. */
+static double *leak_cfa, *leak_cva, *leak_qfa, *leak_qva;
 
 /* grow — (re)allocate a mirror array when the network got bigger. */
 static void *grow(void *p, int n, size_t size)
@@ -324,6 +324,10 @@ static void fill_mirror(Project *pr)
         mirror_nodes = net->Nnodes;
         m->el = grow(m->el, mirror_nodes, sizeof(double));
         m->ke = grow(m->ke, mirror_nodes, sizeof(double));
+        leak_cfa = grow(leak_cfa, mirror_nodes, sizeof(double));
+        leak_cva = grow(leak_cva, mirror_nodes, sizeof(double));
+        leak_qfa = grow(leak_qfa, mirror_nodes, sizeof(double));
+        leak_qva = grow(leak_qva, mirror_nodes, sizeof(double));
     }
     if (net->Nlinks > mirror_links) {
         mirror_links = net->Nlinks;
@@ -385,7 +389,16 @@ static void fill_mirror(Project *pr)
     for (i = 1; i <= net->Nnodes; i++) {
         m->el[i] = net->Node[i].El;
         m->ke[i] = net->Node[i].Ke;
+        leak_cfa[i] = leak_cva[i] = leak_qfa[i] = leak_qva[i] = 0.0;
     }
+    if (pr->hydraul.Leakage) for (i = 1; i <= net->Njuncs; i++) {
+        leak_cfa[i] = pr->hydraul.Leakage[i].cfa;
+        leak_cva[i] = pr->hydraul.Leakage[i].cva;
+        leak_qfa[i] = pr->hydraul.Leakage[i].qfa;
+        leak_qva[i] = pr->hydraul.Leakage[i].qva;
+    }
+    m->leak_cfa = leak_cfa;
+    m->leak_cva = leak_cva;
     for (k = 1; k <= net->Nlinks; k++) {
         Slink *l = &net->Link[k];
         m->link_type[k] = l->Type;
@@ -449,6 +462,16 @@ static void pumps_from_mirror(Project *pr)
     }
 }
 
+static void leaks_from_mirror(Project *pr)
+{
+    int i;
+    if (!pr->hydraul.Leakage) return;
+    for (i = 1; i <= pr->network.Njuncs; i++) {
+        pr->hydraul.Leakage[i].qfa = leak_qfa[i];
+        pr->hydraul.Leakage[i].qva = leak_qva[i];
+    }
+}
+
 static OdinHydraulics hydraulics_view(Project *pr)
 {
     Hydraul *hyd = &pr->hydraul;
@@ -481,6 +504,8 @@ static OdinHydraulics hydraulics_view(Project *pr)
     h.full_demand = hyd->FullDemand;
     h.emitter_flow = hyd->EmitterFlow;
     h.leak_flow = hyd->LeakageFlow;
+    h.leak_qfa = leak_qfa;
+    h.leak_qva = leak_qva;
     h.xflow = hyd->Xflow;
     h.flow = hyd->LinkFlow;
     h.setting = hyd->LinkSetting;
@@ -511,13 +536,6 @@ static OdinMatrix matrix_view(Project *pr)
 }
 
 /* The hooks: each one is the EPANET function of the same purpose. */
-static void hook_leakage_coeffs(void *ctx) { leakagecoeffs(ctx); }
-static double hook_leakage_flow_change(void *ctx, int i, double relax)
-{
-    ((Project *)ctx)->hydraul.RelaxFactor = relax; /* leakage.c reads it */
-    return leakageflowchange(ctx, i);
-}
-static int hook_leakage_converged(void *ctx) { return leakagehasconverged(ctx); }
 static void hook_relerr(void *ctx, int iter, double relerr) { writerelerr(ctx, iter, relerr); }
 static void hook_statchange(void *ctx, int k, int s0, int s1) { writestatchange(ctx, k, s0, s1); }
 static void hook_hyderr(void *ctx, int n) { writehyderr(ctx, n); }
@@ -547,9 +565,6 @@ static OdinHooks hooks_for(Project *pr)
 {
     OdinHooks h;
     h.ctx = pr;
-    h.leakage_coeffs = hook_leakage_coeffs;
-    h.leakage_flow_change = hook_leakage_flow_change;
-    h.leakage_converged = hook_leakage_converged;
     h.write_relerr = hook_relerr;
     h.write_statchange = hook_statchange;
     h.write_hyderr = hook_hyderr;
@@ -560,31 +575,34 @@ static OdinHooks hooks_for(Project *pr)
 
 static void headlosscoeffs_odin(Project *pr)
 {
-    OdinHydraulics h = hydraulics_view(pr);
+    OdinHydraulics h;
     fill_mirror(pr);
+    h = hydraulics_view(pr);
     odin_headlosscoeffs(&mirror, &h);
     pumps_from_mirror(pr);
 }
 
 static void matrixcoeffs_odin(Project *pr)
 {
-    OdinHydraulics h = hydraulics_view(pr);
     OdinMatrix m = matrix_view(pr);
-    OdinHooks hooks = hooks_for(pr);
+    OdinHydraulics h;
     fill_mirror(pr);
-    odin_matrixcoeffs(&mirror, &h, &m, &hooks);
+    h = hydraulics_view(pr);
+    odin_matrixcoeffs(&mirror, &h, &m);
 }
 
 static int hydsolve_odin(Project *pr, int *iter, double *relerr)
 {
     Hydraul *hyd = &pr->hydraul;
-    OdinHydraulics h = hydraulics_view(pr);
     OdinMatrix m = matrix_view(pr);
     OdinHooks hooks = hooks_for(pr);
+    OdinHydraulics h;
     OdinSolution sol;
     fill_mirror(pr);
+    h = hydraulics_view(pr);
     odin_hydsolve(&mirror, &h, &m, &hooks, &sol);
     pumps_from_mirror(pr);
+    leaks_from_mirror(pr);
     hyd->RelaxFactor = sol.relax;
     hyd->RelativeError = sol.relative_error;
     hyd->MaxHeadError = sol.max_head_error;

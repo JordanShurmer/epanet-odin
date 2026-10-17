@@ -21,6 +21,7 @@ src/            the Odin package `epanet` — the rewrite
   hydcoeffs.odin  link coefficients and matrix assembly
   hydstatus.odin  status checks between trials
   hydsolve.odin   the Newton loop
+  leakage.odin    pipe leaks as node demand, per trial
   export.odin     the C face: one exported proc per swapped EPANET symbol
 fixtures/       small networks that reach the branches the real ones do not
 bridge/
@@ -89,16 +90,17 @@ Ported, bit-exact on every fixture:
 
 4. **`hydsolve`** — the Newton loop with the status checks
    (`hydsolve.odin`, `hydstatus.odin`): damping, convergence (head error,
-   flow change, PDA), the ill-conditioning recovery, pressure controls.
-   What is still C's, leakage and the status-report lines, is reached
-   through `Hooks`, a struct of C function pointers the bridge fills. The
-   shadow snapshots every array and scalar the solver writes, runs both,
-   and compares the lot.
+   flow change, PDA), the ill-conditioning recovery, pressure controls,
+   and the per-trial leakage model (`leakage.odin`). What is still C's,
+   the status-report lines, is reached through `Hooks`, a struct of C
+   function pointers the bridge fills. The shadow snapshots every array
+   and scalar the solver writes, runs both, and compares the lot.
 
 Next, in order:
 
 5. **Time stepping and controls** — `hydraul.c`: tank levels, patterns,
-   simple controls, rules, energy.
+   simple controls, rules, energy; `openleakage`'s pipe-to-node leak
+   coefficients; `resistcoeff` and the PCV loss curve.
 6. **Water quality** — `quality.c`, `qualroute.c`, `qualreact.c`.
 7. **The outside** — `.inp` parsing, reporting, the toolkit API; at that
    point `epanet/epanet.go` links the Odin library instead of

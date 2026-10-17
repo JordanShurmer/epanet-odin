@@ -78,8 +78,9 @@ Network :: struct {
 	nnodes, njuncs, nlinks:                  int,
 	ntanks, npumps, nvalves, ncontrols:      int,
 
-	// nodes: elevation, emitter coefficient
+	// nodes: elevation, emitter coefficient, leak coefficients (junctions)
 	el, ke:                                  []f64,
+	leak_cfa, leak_cva:                      []f64,
 
 	// links
 	link_type:                               []Link_Type,
@@ -137,6 +138,7 @@ Hydraulics :: struct {
 	node_demand:               []f64, // total outflow; at a tank, net inflow
 	demand_flow, full_demand:  []f64,
 	emitter_flow, leak_flow:   []f64,
+	leak_qfa, leak_qva:        []f64, // the two halves of leak_flow
 	xflow:                     []f64, // inflow − outflow at the node
 
 	// links
@@ -145,16 +147,13 @@ Hydraulics :: struct {
 	p, y:                      []f64, // 1/gradient and loss/gradient per link
 }
 
-// Hooks are what the solver still leaves to C: node leakage (not ported
-// yet) and the lines of the status report. ctx goes back with every call.
+// Hooks are the lines of the status report, which the solver still
+// leaves to C's report writer. ctx goes back with every call.
 Hooks :: struct {
-	ctx:                 rawptr,
-	leakage_coeffs:      proc "c" (ctx: rawptr),
-	leakage_flow_change: proc "c" (ctx: rawptr, node: i32, relax: f64) -> f64,
-	leakage_converged:   proc "c" (ctx: rawptr) -> i32,
-	write_relerr:        proc "c" (ctx: rawptr, iter: i32, relerr: f64),
-	write_statchange:    proc "c" (ctx: rawptr, link: i32, old, new: Status),
-	write_hyderr:        proc "c" (ctx: rawptr, node: i32),
-	write_hydbal:        proc "c" (ctx: rawptr, flow_change, head_error: f64, qlink, qnode, hlink: i32),
-	write_badvalve:      proc "c" (ctx: rawptr, link: i32),
+	ctx:              rawptr,
+	write_relerr:     proc "c" (ctx: rawptr, iter: i32, relerr: f64),
+	write_statchange: proc "c" (ctx: rawptr, link: i32, old, new: Status),
+	write_hyderr:     proc "c" (ctx: rawptr, node: i32),
+	write_hydbal:     proc "c" (ctx: rawptr, flow_change, head_error: f64, qlink, qnode, hlink: i32),
+	write_badvalve:   proc "c" (ctx: rawptr, link: i32),
 }
