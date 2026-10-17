@@ -66,16 +66,9 @@ headloss_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) {
 	}
 }
 
-// matrix_coeffs assembles A and F. leakage is called between the demands
-// and the node balances when the network leaks (EPANET's leakagecoeffs,
-// not ported yet); nil otherwise.
-matrix_coeffs :: proc "contextless" (
-	net: ^Network,
-	hyd: ^Hydraulics,
-	m: ^Matrix,
-	leakage: proc "c" (ctx: rawptr),
-	ctx: rawptr,
-) {
+// matrix_coeffs assembles A and F. Leakage, still C's, is called between
+// the demands and the node balances when the network leaks.
+matrix_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, hooks: ^Hooks) {
 	for i in 0 ..= net.nnodes {
 		m.aii[i] = 0
 		m.f[i] = 0
@@ -86,7 +79,7 @@ matrix_coeffs :: proc "contextless" (
 	link_coeffs(net, hyd, m)
 	emitter_coeffs(net, hyd, m)
 	demand_coeffs(net, hyd, m)
-	if hyd.has_leakage do leakage(ctx)
+	if hyd.has_leakage do hooks.leakage_coeffs(hooks.ctx)
 	node_coeffs(net, hyd, m)
 	valve_coeffs(net, hyd, m)
 }
@@ -94,7 +87,7 @@ matrix_coeffs :: proc "contextless" (
 // link_coeffs adds each link's P to the diagonals of its two ends and
 // −P to their shared off-diagonal; a tank end goes to the right-hand side
 // as P·H instead, since its head is known.
-link_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix) {
+link_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix) {
 	for k in 1 ..= net.nlinks {
 		if hyd.p[k] == 0 do continue
 		n1, n2 := net.n1[k], net.n2[k]
@@ -121,7 +114,7 @@ link_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix) 
 }
 
 // node_coeffs closes each junction's flow balance with its demand.
-node_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix) {
+node_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix) {
 	for i in 1 ..= net.njuncs {
 		hyd.xflow[i] -= hyd.demand_flow[i]
 		m.f[m.row[i]] += hyd.xflow[i]
@@ -129,7 +122,7 @@ node_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix) 
 }
 
 // valve_coeffs handles the PRVs, PSVs and FCVs that have a setting.
-valve_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix) {
+valve_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix) {
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]
 		if hyd.setting[k] == MISSING do continue
@@ -147,7 +140,7 @@ valve_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix)
 
 // An emitter is a pipe to a reservoir at the node's own elevation with
 // head loss Ke·q^Qexp.
-emitter_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix) {
+emitter_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix) {
 	for i in 1 ..= net.njuncs {
 		if net.ke[i] == 0 do continue
 		hloss, hgrad := emitter_headloss(net, hyd, i)
@@ -174,7 +167,7 @@ emitter_headloss :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, i: int)
 
 // A pressure-dependent demand is an emitter with loss
 // Preq·(D/Dfull)^(1/Pexp): nothing below Pmin, all of it above Preq.
-demand_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix) {
+demand_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix) {
 	if hyd.demand_model == .DDA do return
 	dp := hyd.preq - hyd.pmin
 	n := 1 / hyd.pexp
@@ -409,7 +402,7 @@ pcv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) {
 // An active PRV pins the downstream head to its setting; otherwise it is
 // an open or closed valve whose coefficients go straight into the matrix
 // (link_coeffs skipped it, since P was 0).
-prv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix, k: int, n1, n2: i32) {
+prv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, k: int, n1, n2: i32) {
 	i, j := m.row[n1], m.row[n2]
 	hset := net.el[n2] + hyd.setting[k]
 	if hyd.status[k] == .ACTIVE {
@@ -425,7 +418,7 @@ prv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix, k:
 }
 
 
-psv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix, k: int, n1, n2: i32) {
+psv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, k: int, n1, n2: i32) {
 	i, j := m.row[n1], m.row[n2]
 	hset := net.el[n1] + hyd.setting[k]
 	if hyd.status[k] == .ACTIVE {
@@ -444,7 +437,7 @@ psv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix, k:
 
 // An active FCV breaks the network at the valve: its setting leaves the
 // upstream node as a demand and arrives downstream as a supply.
-fcv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix, k: int, n1, n2: i32) {
+fcv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, k: int, n1, n2: i32) {
 	q := hyd.setting[k]
 	i, j := m.row[n1], m.row[n2]
 	if hyd.status[k] == .ACTIVE {
@@ -463,7 +456,7 @@ fcv_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Matrix, k:
 	open_valve_into_matrix(hyd, m, k, i, j)
 }
 
-open_valve_into_matrix :: #force_inline proc "contextless" (hyd: ^Hydraulics, m: ^Matrix, k: int, i, j: i32) {
+open_valve_into_matrix :: #force_inline proc "contextless" (hyd: ^Hydraulics, m: ^Smatrix, k: int, i, j: i32) {
 	m.aij[m.ndx[k]] -= hyd.p[k]
 	m.aii[i] += hyd.p[k]
 	m.aii[j] += hyd.p[k]

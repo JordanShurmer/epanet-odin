@@ -7,6 +7,8 @@
 #   SWAP="linsolve" epanet/odin/test.sh      the symbols to take from Odin
 #   ODIN=/opt/odin/odin epanet/odin/test.sh  where the compiler is (default: PATH)
 #   FIXTURES="a.inp b.inp" epanet/odin/test.sh   just those networks
+#   ASAN=1 epanet/odin/test.sh     every binary under AddressSanitizer (both
+#                                  sides; needs libclang-rt-<ver>-dev)
 #
 # Three binaries of the same driver (bridge/run.c) are built from EPANET's own
 # sources in epanet/EPANET: `c` is plain EPANET; `odin` has each symbol in SWAP
@@ -27,13 +29,18 @@ for a in "$@"; do
 done
 
 ODIN=${ODIN:-odin}
-SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs"}
+SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve"}
 TOL=${TOL:-1e-9}
 EP=epanet/EPANET
 OD=epanet/odin
 B=$OD/build
 CC=${CC:-clang}
 CFLAGS="-O2 -w -I$EP/include -I$EP/src"
+ODINFLAGS="-o:speed"
+if [ -n "${ASAN:-}" ]; then
+    CFLAGS="$CFLAGS -g -fsanitize=address"
+    ODINFLAGS="-o:none -debug -sanitize:address"
+fi
 
 command -v "$ODIN" >/dev/null || usage "odin compiler not found (ODIN=$ODIN); see $OD/README.md"
 [ -f $EP/src/epanet.c ] || usage "$EP is empty — git submodule update --init epanet/EPANET"
@@ -91,14 +98,14 @@ done
 
 note "odin build $OD/src"
 run "$ODIN" build $OD/src -build-mode:static -out:"$B/libepanet-odin.a" \
-    -no-entry-point -o:speed -vet -strict-style || bad "odin build"
+    -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build"
 
 run $CC $CFLAGS -c $OD/bridge/bridge.c -o "$B/bridge.o" || bad "compile bridge.c"
 run $CC $CFLAGS -DSHADOW -c $OD/bridge/bridge.c -o "$B/bridge-shadow.o" || bad "compile bridge.c -DSHADOW"
 
-run $CC "$B/run.o" "$B"/c/*.o -lm -o "$B/run-c" || bad "link run-c"
-run $CC "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
-run $CC "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
+run $CC $CFLAGS "$B/run.o" "$B"/c/*.o -lm -o "$B/run-c" || bad "link run-c"
+run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
+run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
 [ "$_fail" -eq 0 ] || { tally "epanet-odin"; exit 1; }
 ok "build c odin shadow"
 

@@ -54,8 +54,17 @@ Demand_Model :: enum i32 {
 	PDA, // pressure driven
 }
 
+Control_Type :: enum i32 {
+	LOWLEVEL, // act when grade falls below a level
+	HILEVEL, // act when grade rises above a level
+	TIMER,
+	TIMEOFDAY,
+}
+
 MISSING : f64 : -1e10 // a setting that is not set
 TINY : f64 : 1e-6
+BIG : f64 : 1e10
+MINPDIFF : f64 : 0.1 // least PDA pressure range (psi or m)
 CBIG : f64 : 1e8 // a huge resistance: a closed link
 CSMALL : f64 : 1e-6 // a tiny resistance: an open valve
 
@@ -66,7 +75,8 @@ Curve :: struct {
 
 // Network is the model as the hydraulic solver reads it.
 Network :: struct {
-	nnodes, njuncs, nlinks, npumps, nvalves: int,
+	nnodes, njuncs, nlinks:                  int,
+	ntanks, npumps, nvalves, ncontrols:      int,
 
 	// nodes: elevation, emitter coefficient
 	el, ke:                                  []f64,
@@ -77,14 +87,26 @@ Network :: struct {
 	diam, km, kc, r:                         []f64, // diameter, minor loss, roughness/setting, resistance
 	link_pump, link_valve:                   []i32, // the pump or valve a link is, 0 for none
 
+	// tanks and reservoirs: tank i is node njuncs + i; a reservoir has no area
+	tank_area, tank_hmin, tank_hmax:         []f64,
+	tank_overflow:                           []b32,
+
 	// pumps
 	pump_type:                               []Pump_Type,
 	pump_hcurve:                             []i32,
 	pump_h0, pump_r, pump_n:                 []f64, // head curve: h = h0 - r·q^n
+	pump_hmax:                               []f64, // shutoff head
 
 	// valves
 	valve_link, valve_curve:                 []i32,
 	curves:                                  []Curve,
+
+	// simple controls on junction pressure (the tank and time ones act
+	// between time steps, not inside the solver)
+	control_link, control_node:              []i32,
+	control_type:                            []Control_Type,
+	control_grade, control_setting:          []f64,
+	control_status:                          []Status,
 
 	// unit conversion: curves are stored in user units
 	ucf_flow, ucf_head:                      f64,
@@ -100,11 +122,22 @@ Hydraulics :: struct {
 	pmin, preq:                f64, // PDA pressure range
 	rqtol:                     f64, // resistance below which head loss is linear
 	viscos:                    f64,
+	htol, qtol:                f64, // head and flow tolerances for status checks
+	hacc:                      f64, // relative flow change that counts as converged
+	head_error_limit:          f64, // 0 = not checked
+	flow_change_limit:         f64, // 0 = not checked
+	damp_limit:                f64, // relax to 60 % once the error is under this; 0 = never
+	max_iter, extra_iter:      int, // trials, and extra trials with statuses frozen
+	check_freq, max_check:     int, // status checks every check_freq trials up to max_check
+	relax:                     f64, // the relaxation factor in force
+	status_report:             bool, // the full status report is on (hooks get called)
 
 	// nodes
 	head:                      []f64,
+	node_demand:               []f64, // total outflow; at a tank, net inflow
 	demand_flow, full_demand:  []f64,
-	emitter_flow, xflow:       []f64, // xflow: inflow − outflow at the node
+	emitter_flow, leak_flow:   []f64,
+	xflow:                     []f64, // inflow − outflow at the node
 
 	// links
 	flow, setting:             []f64,
@@ -112,9 +145,16 @@ Hydraulics :: struct {
 	p, y:                      []f64, // 1/gradient and loss/gradient per link
 }
 
-// Matrix is the linear system the coefficients fill, plus the maps from
-// the network into it (see Sparse).
-Matrix :: struct {
-	aii, aij, f: []f64,
-	row, ndx:    []i32,
+// Hooks are what the solver still leaves to C: node leakage (not ported
+// yet) and the lines of the status report. ctx goes back with every call.
+Hooks :: struct {
+	ctx:                 rawptr,
+	leakage_coeffs:      proc "c" (ctx: rawptr),
+	leakage_flow_change: proc "c" (ctx: rawptr, node: i32, relax: f64) -> f64,
+	leakage_converged:   proc "c" (ctx: rawptr) -> i32,
+	write_relerr:        proc "c" (ctx: rawptr, iter: i32, relerr: f64),
+	write_statchange:    proc "c" (ctx: rawptr, link: i32, old, new: Status),
+	write_hyderr:        proc "c" (ctx: rawptr, node: i32),
+	write_hydbal:        proc "c" (ctx: rawptr, flow_change, head_error: f64, qlink, qnode, hlink: i32),
+	write_badvalve:      proc "c" (ctx: rawptr, link: i32),
 }

@@ -17,8 +17,10 @@ src/            the Odin package `epanet` — the rewrite
   smatrix.odin    numeric Cholesky: linsolve
   sparse.odin     symbolic factorization: createsparse
   genmmd.odin     minimum-degree ordering
-  network.odin    the model and solver state, one array per field
+  network.odin    the model and solver state, one array per field; Hooks
   hydcoeffs.odin  link coefficients and matrix assembly
+  hydstatus.odin  status checks between trials
+  hydsolve.odin   the Newton loop
   export.odin     the C face: one exported proc per swapped EPANET symbol
 fixtures/       small networks that reach the branches the real ones do not
 bridge/
@@ -45,7 +47,9 @@ same driver come out:
 
 A fixture passes when `run-c` and `run-odin` print the same results
 (bit-exact, or within `TOL=1e-9` relative — then it says so) **and**
-`run-shadow` reports zero per-call mismatches. The shadow is the sharp tool:
+`run-shadow` reports zero per-call mismatches. `ASAN=1` builds all three
+under AddressSanitizer, Odin side included (`-sanitize:address`); it found
+the one heap overrun so far, in the shadow's own bookkeeping. The shadow is the sharp tool:
 a port that drifts on the ten-thousandth call of a 24-hour run is caught at
 that call, with the index and both values, not as a smeared difference in
 the final heads.
@@ -83,10 +87,16 @@ Ported, bit-exact on every fixture:
    structs on every call. Leakage stays in C for now, called back between
    the demands and the node balances.
 
+4. **`hydsolve`** — the Newton loop with the status checks
+   (`hydsolve.odin`, `hydstatus.odin`): damping, convergence (head error,
+   flow change, PDA), the ill-conditioning recovery, pressure controls.
+   What is still C's, leakage and the status-report lines, is reached
+   through `Hooks`, a struct of C function pointers the bridge fills. The
+   shadow snapshots every array and scalar the solver writes, runs both,
+   and compares the lot.
+
 Next, in order:
 
-4. **The Newton loop** — `hydsolve`, with `hydstatus.c` (valve and link
-   status checks) and the convergence tests.
 5. **Time stepping and controls** — `hydraul.c`: tank levels, patterns,
    simple controls, rules, energy.
 6. **Water quality** — `quality.c`, `qualroute.c`, `qualreact.c`.

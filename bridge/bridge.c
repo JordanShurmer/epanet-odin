@@ -23,6 +23,7 @@
 
 #include "types.h"
 #include "funcs.h"
+#include "text.h"
 
 /* The originals, renamed at link time. */
 int linsolve_c(Smatrix *sm, int n);
@@ -48,8 +49,10 @@ static Shadow shadow_linsolve = {"linsolve"};
 static Shadow shadow_createsparse = {"createsparse"};
 static Shadow shadow_headlosscoeffs = {"headlosscoeffs"};
 static Shadow shadow_matrixcoeffs = {"matrixcoeffs"};
+static Shadow shadow_hydsolve = {"hydsolve"};
 static Shadow *shadows[] = {&shadow_linsolve, &shadow_createsparse,
-                            &shadow_headlosscoeffs, &shadow_matrixcoeffs};
+                            &shadow_headlosscoeffs, &shadow_matrixcoeffs,
+                            &shadow_hydsolve};
 static int shadow_registered;
 
 static void shadow_report(void)
@@ -234,44 +237,76 @@ int createsparse(Project *pr) { return createsparse_odin(pr); }
  * fields of Slink, Spump, Svalve and Scurve are copied into a mirror on
  * every call, which is what a harness that must never go stale has to do. */
 typedef struct {
-    int nnodes, njuncs, nlinks, npumps, nvalves, ncurves;
+    int nnodes, njuncs, nlinks;
+    int ntanks, npumps, nvalves, ncontrols, ncurves;
     double *el, *ke;
     int *link_type, *n1, *n2;
     double *diam, *km, *kc, *r;
     int *link_pump, *link_valve;
+    double *tank_area, *tank_hmin, *tank_hmax;
+    int *tank_overflow;
     int *pump_type, *pump_hcurve;
-    double *pump_h0, *pump_r, *pump_n;
+    double *pump_h0, *pump_r, *pump_n, *pump_hmax;
     int *valve_link, *valve_curve;
     int *curve_npts;
     double **curve_x, **curve_y;
+    int *control_link, *control_node, *control_type;
+    double *control_grade, *control_setting;
+    int *control_status;
     double ucf_flow, ucf_head;
 } OdinNetwork;
 
 typedef struct {
     int formflag, demand_model, emit_backflow, has_leakage;
+    int max_iter, extra_iter, check_freq, max_check, status_report;
     double hexp, qexp, pexp, pmin, preq, rqtol, viscos;
-    double *head, *demand_flow, *full_demand, *emitter_flow, *xflow;
+    double htol, qtol, hacc, head_error_limit, flow_change_limit;
+    double damp_limit;
+    double *head, *node_demand, *demand_flow, *full_demand;
+    double *emitter_flow, *leak_flow, *xflow;
     double *flow, *setting;
     int *status;
     double *p, *y;
 } OdinHydraulics;
 
+/* What the solver still leaves to C: leakage and the status report. */
+typedef struct {
+    void *ctx;
+    void (*leakage_coeffs)(void *);
+    double (*leakage_flow_change)(void *, int, double);
+    int (*leakage_converged)(void *);
+    void (*write_relerr)(void *, int, double);
+    void (*write_statchange)(void *, int, int, int);
+    void (*write_hyderr)(void *, int);
+    void (*write_hydbal)(void *, double, double, int, int, int);
+    void (*write_badvalve)(void *, int);
+} OdinHooks;
+
+typedef struct {
+    int errcode, iterations, deficient_nodes;
+    double relative_error, max_head_error, max_flow_change;
+    double demand_reduction, relax;
+} OdinSolution;
+
 typedef struct {
     int ncoeffs;
-    double *aii, *aij, *f;
-    int *row, *ndx;
+    double *aii, *aij, *f, *temp;
+    int *xlnz, *nzsub, *lnz, *link, *first;
+    int *order, *row, *ndx;
 } OdinMatrix;
 
 void odin_headlosscoeffs(OdinNetwork *n, OdinHydraulics *h);
-void odin_matrixcoeffs(OdinNetwork *n, OdinHydraulics *h, OdinMatrix *m,
-                       void (*leakage)(void *), void *ctx);
+void odin_matrixcoeffs(OdinNetwork *n, OdinHydraulics *h, OdinMatrix *m, OdinHooks *hooks);
+void odin_hydsolve(OdinNetwork *n, OdinHydraulics *h, OdinMatrix *m, OdinHooks *hooks,
+                   OdinSolution *out);
 
 void headlosscoeffs_c(Project *pr);
 void matrixcoeffs_c(Project *pr);
-void leakagecoeffs(Project *pr);
+int hydsolve_c(Project *pr, int *iter, double *relerr);
 
 static OdinNetwork mirror;
-static int mirror_nodes, mirror_links, mirror_pumps, mirror_valves, mirror_curves;
+static int mirror_nodes, mirror_links, mirror_tanks, mirror_pumps, mirror_valves,
+           mirror_controls, mirror_curves;
 
 /* grow — (re)allocate a mirror array when the network got bigger. */
 static void *grow(void *p, int n, size_t size)
@@ -302,6 +337,13 @@ static void fill_mirror(Project *pr)
         m->link_pump = grow(m->link_pump, mirror_links, sizeof(int));
         m->link_valve = grow(m->link_valve, mirror_links, sizeof(int));
     }
+    if (net->Ntanks > mirror_tanks) {
+        mirror_tanks = net->Ntanks;
+        m->tank_area = grow(m->tank_area, mirror_tanks, sizeof(double));
+        m->tank_hmin = grow(m->tank_hmin, mirror_tanks, sizeof(double));
+        m->tank_hmax = grow(m->tank_hmax, mirror_tanks, sizeof(double));
+        m->tank_overflow = grow(m->tank_overflow, mirror_tanks, sizeof(int));
+    }
     if (net->Npumps > mirror_pumps) {
         mirror_pumps = net->Npumps;
         m->pump_type = grow(m->pump_type, mirror_pumps, sizeof(int));
@@ -309,6 +351,16 @@ static void fill_mirror(Project *pr)
         m->pump_h0 = grow(m->pump_h0, mirror_pumps, sizeof(double));
         m->pump_r = grow(m->pump_r, mirror_pumps, sizeof(double));
         m->pump_n = grow(m->pump_n, mirror_pumps, sizeof(double));
+        m->pump_hmax = grow(m->pump_hmax, mirror_pumps, sizeof(double));
+    }
+    if (net->Ncontrols > mirror_controls) {
+        mirror_controls = net->Ncontrols;
+        m->control_link = grow(m->control_link, mirror_controls, sizeof(int));
+        m->control_node = grow(m->control_node, mirror_controls, sizeof(int));
+        m->control_type = grow(m->control_type, mirror_controls, sizeof(int));
+        m->control_grade = grow(m->control_grade, mirror_controls, sizeof(double));
+        m->control_setting = grow(m->control_setting, mirror_controls, sizeof(double));
+        m->control_status = grow(m->control_status, mirror_controls, sizeof(int));
     }
     if (net->Nvalves > mirror_valves) {
         mirror_valves = net->Nvalves;
@@ -325,8 +377,10 @@ static void fill_mirror(Project *pr)
     m->nnodes = net->Nnodes;
     m->njuncs = net->Njuncs;
     m->nlinks = net->Nlinks;
+    m->ntanks = net->Ntanks;
     m->npumps = net->Npumps;
     m->nvalves = net->Nvalves;
+    m->ncontrols = net->Ncontrols;
     m->ncurves = net->Ncurves;
     for (i = 1; i <= net->Nnodes; i++) {
         m->el[i] = net->Node[i].El;
@@ -344,6 +398,12 @@ static void fill_mirror(Project *pr)
         m->link_pump[k] = 0;
         m->link_valve[k] = 0;
     }
+    for (i = 1; i <= net->Ntanks; i++) {
+        m->tank_area[i] = net->Tank[i].A;
+        m->tank_hmin[i] = net->Tank[i].Hmin;
+        m->tank_hmax[i] = net->Tank[i].Hmax;
+        m->tank_overflow[i] = net->Tank[i].CanOverflow;
+    }
     for (i = 1; i <= net->Npumps; i++) {
         Spump *p = &net->Pump[i];
         m->link_pump[p->Link] = i;
@@ -352,6 +412,16 @@ static void fill_mirror(Project *pr)
         m->pump_h0[i] = p->H0;
         m->pump_r[i] = p->R;
         m->pump_n[i] = p->N;
+        m->pump_hmax[i] = p->Hmax;
+    }
+    for (i = 1; i <= net->Ncontrols; i++) {
+        Scontrol *c = &net->Control[i];
+        m->control_link[i] = c->Link;
+        m->control_node[i] = c->Node;
+        m->control_type[i] = c->Type;
+        m->control_grade[i] = c->Grade;
+        m->control_setting[i] = c->Setting;
+        m->control_status[i] = c->Status;
     }
     for (i = 1; i <= net->Nvalves; i++) {
         m->link_valve[net->Valve[i].Link] = i;
@@ -387,6 +457,17 @@ static OdinHydraulics hydraulics_view(Project *pr)
     h.demand_model = hyd->DemandModel;
     h.emit_backflow = hyd->EmitBackFlag;
     h.has_leakage = hyd->HasLeakage;
+    h.max_iter = hyd->MaxIter;
+    h.extra_iter = hyd->ExtraIter;
+    h.check_freq = hyd->CheckFreq;
+    h.max_check = hyd->MaxCheck;
+    h.status_report = pr->report.Statflag == FULL;
+    h.htol = hyd->Htol;
+    h.qtol = hyd->Qtol;
+    h.hacc = hyd->Hacc;
+    h.head_error_limit = hyd->HeadErrorLimit;
+    h.flow_change_limit = hyd->FlowChangeLimit;
+    h.damp_limit = hyd->DampLimit;
     h.hexp = hyd->Hexp;
     h.qexp = hyd->Qexp;
     h.pexp = hyd->Pexp;
@@ -395,9 +476,11 @@ static OdinHydraulics hydraulics_view(Project *pr)
     h.rqtol = hyd->RQtol;
     h.viscos = hyd->Viscos;
     h.head = hyd->NodeHead;
+    h.node_demand = hyd->NodeDemand;
     h.demand_flow = hyd->DemandFlow;
     h.full_demand = hyd->FullDemand;
     h.emitter_flow = hyd->EmitterFlow;
+    h.leak_flow = hyd->LeakageFlow;
     h.xflow = hyd->Xflow;
     h.flow = hyd->LinkFlow;
     h.setting = hyd->LinkSetting;
@@ -415,12 +498,65 @@ static OdinMatrix matrix_view(Project *pr)
     m.aii = sm->Aii;
     m.aij = sm->Aij;
     m.f = sm->F;
+    m.temp = sm->temp;
+    m.xlnz = sm->XLNZ;
+    m.nzsub = sm->NZSUB;
+    m.lnz = sm->LNZ;
+    m.link = sm->link;
+    m.first = sm->first;
+    m.order = sm->Order;
     m.row = sm->Row;
     m.ndx = sm->Ndx;
     return m;
 }
 
-static void leakage_cb(void *ctx) { leakagecoeffs((Project *)ctx); }
+/* The hooks: each one is the EPANET function of the same purpose. */
+static void hook_leakage_coeffs(void *ctx) { leakagecoeffs(ctx); }
+static double hook_leakage_flow_change(void *ctx, int i, double relax)
+{
+    ((Project *)ctx)->hydraul.RelaxFactor = relax; /* leakage.c reads it */
+    return leakageflowchange(ctx, i);
+}
+static int hook_leakage_converged(void *ctx) { return leakagehasconverged(ctx); }
+static void hook_relerr(void *ctx, int iter, double relerr) { writerelerr(ctx, iter, relerr); }
+static void hook_statchange(void *ctx, int k, int s0, int s1) { writestatchange(ctx, k, s0, s1); }
+static void hook_hyderr(void *ctx, int n) { writehyderr(ctx, n); }
+static void hook_badvalve(void *ctx, int k)
+{
+    Project *pr = ctx;
+    sprintf(pr->Msg, FMT61, clocktime(pr->report.Atime, pr->times.Htime), pr->network.Link[k].ID);
+    writeline(pr, pr->Msg);
+}
+static void hook_hydbal(void *ctx, double qchange, double herror, int qlink, int qnode, int hlink)
+{
+    Project *pr = ctx;
+    if (qlink >= 1) {
+        sprintf(pr->Msg, FMT66, qchange, pr->network.Link[qlink].ID);
+        writeline(pr, pr->Msg);
+    } else if (qnode >= 1) {
+        sprintf(pr->Msg, FMT67, qchange, pr->network.Node[qnode].ID);
+        writeline(pr, pr->Msg);
+    }
+    if (hlink >= 1) {
+        sprintf(pr->Msg, FMT68, herror, pr->network.Link[hlink].ID);
+        writeline(pr, pr->Msg);
+    }
+}
+
+static OdinHooks hooks_for(Project *pr)
+{
+    OdinHooks h;
+    h.ctx = pr;
+    h.leakage_coeffs = hook_leakage_coeffs;
+    h.leakage_flow_change = hook_leakage_flow_change;
+    h.leakage_converged = hook_leakage_converged;
+    h.write_relerr = hook_relerr;
+    h.write_statchange = hook_statchange;
+    h.write_hyderr = hook_hyderr;
+    h.write_hydbal = hook_hydbal;
+    h.write_badvalve = hook_badvalve;
+    return h;
+}
 
 static void headlosscoeffs_odin(Project *pr)
 {
@@ -434,8 +570,31 @@ static void matrixcoeffs_odin(Project *pr)
 {
     OdinHydraulics h = hydraulics_view(pr);
     OdinMatrix m = matrix_view(pr);
+    OdinHooks hooks = hooks_for(pr);
     fill_mirror(pr);
-    odin_matrixcoeffs(&mirror, &h, &m, leakage_cb, pr);
+    odin_matrixcoeffs(&mirror, &h, &m, &hooks);
+}
+
+static int hydsolve_odin(Project *pr, int *iter, double *relerr)
+{
+    Hydraul *hyd = &pr->hydraul;
+    OdinHydraulics h = hydraulics_view(pr);
+    OdinMatrix m = matrix_view(pr);
+    OdinHooks hooks = hooks_for(pr);
+    OdinSolution sol;
+    fill_mirror(pr);
+    odin_hydsolve(&mirror, &h, &m, &hooks, &sol);
+    pumps_from_mirror(pr);
+    hyd->RelaxFactor = sol.relax;
+    hyd->RelativeError = sol.relative_error;
+    hyd->MaxHeadError = sol.max_head_error;
+    hyd->MaxFlowChange = sol.max_flow_change;
+    hyd->Iterations = sol.iterations;
+    hyd->DeficientNodes = sol.deficient_nodes;
+    hyd->DemandReduction = sol.demand_reduction;
+    *iter = sol.iterations;
+    *relerr = sol.relative_error;
+    return sol.errcode;
 }
 
 #ifdef SHADOW
@@ -486,9 +645,6 @@ void headlosscoeffs(Project *pr)
 
     compare_doubles(s, "P", pc, hyd->P, 1, nl);
     compare_doubles(s, "Y", yc, hyd->Y, 1, nl);
-    if (getenv("SHADOW_DEBUG")) for (i = 1; i <= nl; i++) if (pc[i] != hyd->P[i])
-        fprintf(stderr, "  link %d type %d status %d setting %.17g flow %.17g km %g r %g\n", i,
-                net->Link[i].Type, hyd->LinkStatus[i], hyd->LinkSetting[i], hyd->LinkFlow[i], net->Link[i].Km, net->Link[i].R);
     for (i = 1; i <= np; i++) {
         compare(s, "Pump.H0", i, h0c[i], net->Pump[i].H0);
         compare(s, "Pump.R", i, rc[i], net->Pump[i].R);
@@ -530,7 +686,162 @@ void matrixcoeffs(Project *pr)
     free(p0); free(y0); free(x0);
     free(aii); free(aij); free(f); free(xf); free(pc); free(yc);
 }
+/* Everything hydsolve writes, as one snapshot: a table of arrays and a
+ * few scalars. take fills it from the project, put writes it back,
+ * compare_snap checks one against the live project. */
+typedef struct {
+    const char *name;
+    double *live, *copy;
+    int n;
+} DArr;
+typedef struct {
+    const char *name;
+    int *live, *copy;
+    int n;
+} IArr;
+
+typedef struct {
+    DArr d[32];
+    IArr i[4];
+    int nd, ni;
+    double *leak; /* hyd->Leakage[i].{qfa,qva} interleaved, i over the junctions */
+    double scalars[8];
+} Snapshot;
+
+static void snap_d(Snapshot *s, const char *name, double *live, int n)
+{
+    DArr *a = &s->d[s->nd++];
+    a->name = name; a->live = live; a->n = n;
+    a->copy = malloc((n + 1) * sizeof(double));
+}
+static void snap_i(Snapshot *s, const char *name, int *live, int n)
+{
+    IArr *a = &s->i[s->ni++];
+    a->name = name; a->live = live; a->n = n;
+    a->copy = malloc((n + 1) * sizeof(int));
+}
+
+static void snap_setup(Snapshot *s, Project *pr)
+{
+    Network *net = &pr->network;
+    Hydraul *hyd = &pr->hydraul;
+    Smatrix *sm = &hyd->smatrix;
+    int nn = net->Nnodes, nl = net->Nlinks, i;
+    memset(s, 0, sizeof *s);
+    snap_d(s, "NodeHead", hyd->NodeHead, nn);
+    snap_d(s, "NodeDemand", hyd->NodeDemand, nn);
+    snap_d(s, "DemandFlow", hyd->DemandFlow, nn);
+    snap_d(s, "EmitterFlow", hyd->EmitterFlow, nn);
+    snap_d(s, "LeakageFlow", hyd->LeakageFlow, nn);
+    snap_d(s, "Xflow", hyd->Xflow, nn);
+    snap_d(s, "LinkFlow", hyd->LinkFlow, nl);
+    snap_d(s, "LinkSetting", hyd->LinkSetting, nl);
+    snap_d(s, "P", hyd->P, nl);
+    snap_d(s, "Y", hyd->Y, nl);
+    snap_d(s, "Aii", sm->Aii, nn);
+    snap_d(s, "Aij", sm->Aij, sm->Ncoeffs);
+    snap_d(s, "F", sm->F, nn);
+    snap_i(s, "LinkStatus", (int *)hyd->LinkStatus, nl);
+    for (i = 1; i <= net->Npumps; i++) {
+        snap_d(s, "Pump.H0", &net->Pump[i].H0, 0);
+        snap_d(s, "Pump.R", &net->Pump[i].R, 0);
+        snap_d(s, "Pump.N", &net->Pump[i].N, 0);
+        if (s->nd > 28) break; /* enough pumps for the fixtures */
+    }
+    if (hyd->Leakage) s->leak = malloc(2 * (net->Njuncs + 1) * sizeof(double));
+}
+
+static void snap_scalars(Snapshot *s, Project *pr, int iter, double relerr, int rc)
+{
+    Hydraul *hyd = &pr->hydraul;
+    s->scalars[0] = hyd->RelaxFactor;
+    s->scalars[1] = hyd->RelativeError;
+    s->scalars[2] = hyd->MaxHeadError;
+    s->scalars[3] = hyd->MaxFlowChange;
+    s->scalars[4] = hyd->Iterations;
+    s->scalars[5] = hyd->DeficientNodes;
+    s->scalars[6] = hyd->DemandReduction;
+    s->scalars[7] = rc * 1000000.0 + iter + relerr;
+}
+
+static void snap_take(Snapshot *s, Project *pr)
+{
+    int k, i;
+    for (k = 0; k < s->nd; k++) memcpy(s->d[k].copy, s->d[k].live, (s->d[k].n + 1) * sizeof(double));
+    for (k = 0; k < s->ni; k++) memcpy(s->i[k].copy, s->i[k].live, (s->i[k].n + 1) * sizeof(int));
+    if (s->leak) for (i = 0; i <= pr->network.Njuncs; i++) {
+        s->leak[2 * i] = pr->hydraul.Leakage[i].qfa;
+        s->leak[2 * i + 1] = pr->hydraul.Leakage[i].qva;
+    }
+}
+
+static void snap_put(Snapshot *s, Project *pr)
+{
+    int k, i;
+    for (k = 0; k < s->nd; k++) memcpy(s->d[k].live, s->d[k].copy, (s->d[k].n + 1) * sizeof(double));
+    for (k = 0; k < s->ni; k++) memcpy(s->i[k].live, s->i[k].copy, (s->i[k].n + 1) * sizeof(int));
+    if (s->leak) for (i = 0; i <= pr->network.Njuncs; i++) {
+        pr->hydraul.Leakage[i].qfa = s->leak[2 * i];
+        pr->hydraul.Leakage[i].qva = s->leak[2 * i + 1];
+    }
+}
+
+static void snap_compare(Shadow *sh, Snapshot *s, Project *pr, double *scalars)
+{
+    static const char *names[] = {"RelaxFactor", "RelativeError", "MaxHeadError",
+        "MaxFlowChange", "Iterations", "DeficientNodes", "DemandReduction", "rc/iter/relerr"};
+    int k, i;
+    for (k = 0; k < s->nd; k++)
+        for (i = (s->d[k].n ? 1 : 0); i <= s->d[k].n; i++)
+            compare(sh, s->d[k].name, i, s->d[k].copy[i], s->d[k].live[i]);
+    for (k = 0; k < s->ni; k++)
+        for (i = 1; i <= s->i[k].n; i++)
+            compare(sh, s->i[k].name, i, s->i[k].copy[i], s->i[k].live[i]);
+    if (s->leak) for (i = 1; i <= pr->network.Njuncs; i++) {
+        compare(sh, "Leakage.qfa", i, s->leak[2 * i], pr->hydraul.Leakage[i].qfa);
+        compare(sh, "Leakage.qva", i, s->leak[2 * i + 1], pr->hydraul.Leakage[i].qva);
+    }
+    for (k = 0; k < 8; k++) compare(sh, names[k], 0, s->scalars[k], scalars[k]);
+}
+
+static void snap_free(Snapshot *s)
+{
+    int k;
+    for (k = 0; k < s->nd; k++) free(s->d[k].copy);
+    for (k = 0; k < s->ni; k++) free(s->i[k].copy);
+    free(s->leak);
+}
+
+int hydsolve(Project *pr, int *iter, double *relerr)
+{
+    Shadow *s = &shadow_hydsolve;
+    Snapshot before, after;
+    int rc_c, rc_o, iter_c, iter_o;
+    double relerr_c, relerr_o, scalars_o[8];
+
+    shadow_begin(s);
+    snap_setup(&before, pr);
+    snap_setup(&after, pr);
+    snap_take(&before, pr);
+
+    rc_c = hydsolve_c(pr, &iter_c, &relerr_c);
+    snap_take(&after, pr);
+    snap_scalars(&after, pr, iter_c, relerr_c, rc_c);
+
+    snap_put(&before, pr);
+    rc_o = hydsolve_odin(pr, &iter_o, &relerr_o);
+    snap_scalars(&before, pr, iter_o, relerr_o, rc_o);
+    memcpy(scalars_o, before.scalars, sizeof scalars_o);
+    snap_compare(s, &after, pr, scalars_o);
+
+    snap_free(&before);
+    snap_free(&after);
+    *iter = iter_o;
+    *relerr = relerr_o;
+    return rc_o;
+}
 #else
 void headlosscoeffs(Project *pr) { headlosscoeffs_odin(pr); }
 void matrixcoeffs(Project *pr) { matrixcoeffs_odin(pr); }
+int hydsolve(Project *pr, int *iter, double *relerr) { return hydsolve_odin(pr, iter, relerr); }
 #endif

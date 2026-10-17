@@ -22,9 +22,11 @@ import "base:intrinsics"
 //   lnz[s]       where that nonzero lives in aij
 //   f[j]         right-hand side on the way in, solution on the way out
 //   temp, link, first    scratch, n+1 long, zeroed by linsolve
+//   order[j]     the node in row j; row[node] its row; ndx[k] link k's aij slot
 Smatrix :: struct {
 	aii, aij, f, temp:             []f64,
 	xlnz, nzsub, lnz, link, first: []i32,
+	order, row, ndx:               []i32,
 }
 
 // linsolve factorizes A = L·Lᵀ in place (Cholesky) and solves for x,
