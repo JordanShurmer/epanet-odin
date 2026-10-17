@@ -31,10 +31,20 @@ epanet/         the Odin package `epanet` — the rewrite
   rules.odin      the rule-based controls at run time
   quality.odin    water quality: segments, transport, reactions, tank mixing
   export.odin     the C face: one exported proc per swapped EPANET symbol
+  project.odin    a project the package owns: the network, the settings, the
+                  names, the unit factors, all from one arena
+  parse.odin      the .inp reader, pass one (counts, names) and pass two
+  parse2.odin     the rest of the sections, and the rule statements
+  units.odin      after reading: tank re-indexing, defaults that depend on
+                  other data, the unit factors, conversion to internal units
+  validate.odin   tank levels, pump curve fitting, patterns and curves
+  dump.odin       the project as text, every field, for the comparison
+cmd/dumpnet/    reads an .inp with the Odin reader and prints the project
 harness/        the plug-in validation
   test.sh         builds the three binaries from EPANET's sources and compares
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
   run.c           driver: every node and link value and quality, every step, %.17g
+  dumpnet.c       the twin of cmd/dumpnet over EPANET's own reader
   fixtures/       small networks that reach the branches the real ones do not
   out.sh          the ✓/✗ output vocabulary the script speaks
 EPANET/         OWA EPANET, cloned on demand (gitignored)
@@ -136,24 +146,46 @@ Ported, bit-exact on every fixture:
    The driver runs every fixture twice: hydraulics and quality together,
    and quality from the hydraulics file with `EN_stepQ`.
 
+7. **The run and the rules** — `openhyd`'s `inithyd`, `runhyd`, `nexthyd`
+   (`hydraul.odin`) and the rule engine (`rules.odin`): premises, the
+   action list with priorities, the rule time step. The whole hydraulic
+   and quality run is now Odin's; what stays C's is the report writer and
+   the hydraulics file, behind `Hooks`.
+
+8. **The reader** — `input1.c`, `input2.c`, `input3.c` and the parsing
+   half of `rules.c` (`project.odin`, `parse.odin`, `parse2.odin`,
+   `units.odin`, `validate.odin`). The Odin package now owns a `Project`
+   read from an `.inp` file: the two passes, every section, EPANET's
+   keyword matching (a prefix, case blind), `strtod` numbers, the clock
+   time forms, the error codes and the error count, then the tank
+   re-indexing, the dependent defaults, the unit factors and the
+   conversion to feet, cfs and seconds, and the validation that fits each
+   pump's curve. Checked another way than the engine: `cmd/dumpnet` and
+   `harness/dumpnet.c` print the whole project, from the Odin reader and
+   from EPANET's, and `test.sh` wants the two prints identical — they are,
+   for every fixture, the three parse fixtures (every section and option,
+   the error lines, the junction errors that move the tanks) included.
+   Two EPANET readings are not mirrored, both out of bounds in C: after a
+   quoted token holding a blank it tokenizes the bytes past the line, and
+   a tank line in `[MIXING]` or `[REACTIONS]` read before the tanks are
+   re-indexed is indexed past the tank table (the Odin reader stops at the
+   table's end). One is mirrored on purpose: a quoted token makes the
+   line's last token keep its line end, so `"600" 8 120 1.5` reads 1.5 as
+   no number.
+
 Next, in order:
 
-7. **The outside** — `quality.c`, `qualroute.c`, `qualreact.c`.
-7. **The outside** — `openhyd`/`inithyd`/`runhyd`/`nexthyd` and the rule
-   engine, then `.inp` parsing, reporting, the toolkit API; at that point
-   a program links the Odin library instead of `libepanet2.a`.
+9. **Reporting and the output file** — `report.c`, `output.c`, the
+   hydraulics file: the last of `Hooks` goes away.
+10. **The toolkit API** — `EN_*` over the Odin project, so a program links
+    the Odin library instead of `libepanet2.a`; `run.c` built against it
+    must print what it prints against EPANET.
 
 ## Living inside bywater-mill
 
-This directory is laid out as its own repository. To give it one:
-
-```sh
-git subtree split --prefix=epanet/odin -b epanet-odin   # in bywater-mill
-git push git@github.com:JordanShurmer/epanet-odin.git epanet-odin:main
-```
-
-then replace the directory with a submodule of it. Until then bywater-mill's
-`make epanet-odin` runs the harness here against its own EPANET checkout.
+bywater-mill carries this repository as the submodule `epanet/odin`; its
+`make epanet-odin` runs the harness here against its own EPANET checkout
+with its utilities' networks added to the fixtures.
 
 ## License
 

@@ -199,6 +199,7 @@ Network :: struct {
 	link_pump, link_valve:                   []i32, // the pump or valve a link is, 0 for none
 	init_status:                             []Status,
 	init_setting:                            []f64,
+	leak_area, leak_expan:                   []f64, // pipe leak area and its growth with head
 
 	// tanks and reservoirs: tank i is node njuncs + i; a reservoir has no area
 	tank_node:                               []i32,

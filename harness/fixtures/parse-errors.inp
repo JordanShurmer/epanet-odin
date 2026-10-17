@@ -1,0 +1,37 @@
+[TITLE]
+parse errors: junction lines that fail, so the one tank slides down a slot
+; (one tank and no reservoir: EPANET moves a tank's rule premises once per
+; tank or reservoir, which is wrong past the first; the Odin reader moves
+; them once)
+
+[JUNCTIONS]
+J1    100    10
+J2    abc    5        ; a bad elevation: the node is kept, the line counted
+J1    80              ; a duplicate: not kept
+J3    90     5
+
+[TANKS]
+T1    150   10    2    20   50
+
+[TAGS]
+NODE T1 the-source
+[PIPES]
+11    J1  J2  800   10    110
+12    J2  J3  600   8     120
+13    J3  T1  500   8     120
+
+[CONTROLS]
+LINK 13 CLOSED IF NODE T1 ABOVE 18
+
+[RULES]
+RULE one
+IF TANK T1 LEVEL BELOW 6
+THEN PIPE 13 STATUS IS OPEN
+
+[OPTIONS]
+QUALITY TRACE T1
+
+[TIMES]
+DURATION 1
+
+[END]

@@ -1,0 +1,253 @@
+[TITLE]
+parse edges: every reader branch the real networks leave alone,
+line two of the title, with a ; semicolon kept
+line three
+and a fourth title line that is dropped
+
+[JUNCTIONS]
+J1    100    10      P1
+J2    95
+J4    90     5       P2
+J5    85     0
+J6    88     2
+J7    87     1       P1
+J8    86     1
+
+[RESERVOIRS]
+R1    200    P2
+
+[TANKS]
+T1    150   10    2    20   50    0       *         YES
+T2    140   5     1    12   0     100     VC1       NO
+T3    130   4     1    9    40
+
+[PIPES]
+10    R1  J1  1000  12    100    0.5    Open
+11    J1  J2  800   10    110    0      CV
+12    J2  J4  "600"  8     120    1.5
+13    J4  J5  500   8     120    0      Closed
+14    J5  T1  400   8     120
+15    J2  J6  300   6     110    0      Open
+16    J6  J7  300   6     110
+17    J7  J8  300   6     110
+18    J8  T2  300   6     110
+19    J8  T3  300   6     110
+20    J1  J1  100   6     110                     ; same node both ends
+21    J1  J9  100   6     110                     ; unknown node
+
+[PUMPS]
+PU1   J2  J5  HEAD HC1 SPEED 1.2 PATTERN P1
+PU2   J6  J4  POWER 15
+PU3   J5  J6  HEAD HC2
+
+[VALVES]
+V1    J4  J6  6     PRV   40       0
+V2    J2  J7  6     FCV   100      0.3
+V3    J7  J5  6     GPV   GC1      0
+V4    J6  J8  8     PCV   50       0  VC2
+V5    J5  J8  6     TCV   3        1
+
+[PATTERNS]
+P1   1.0 1.2 0.8
+P1   0.9 1.1
+P2   0.5 0.5 1.5 1.5
+
+[CURVES]
+HC1   0    100
+HC1   500  80
+HC1   1000 40
+HC2   300  60
+VC1   0    0
+VC1   5    1000
+VC1   15   4000
+GC1   0    0  HEADLOSS
+GC1   100  5
+GC1   200  20
+VC2   0    0
+VC2   50   30
+VC2   100  100
+EC1   0    0  EFFIC
+EC1   500  70
+EC1   1000 60
+
+[DEMANDS]
+J1    4      P2
+J1    6      P1
+J2    3
+J4    nope          ; a bad number
+T1    7             ; a tank: ignored
+
+[CONTROLS]
+LINK 13 OPEN IF NODE T1 BELOW 5
+LINK 13 CLOSED IF NODE T1 ABOVE 18 DISABLED
+LINK PU2 0.5 AT TIME 6
+LINK PU2 CLOSED AT CLOCKTIME 10:30 PM
+LINK V1 35 AT TIME 2:30
+LINK 15 1.0 AT TIME 1 HOURS
+LINK 11 CLOSED AT TIME 3             ; a check valve: refused
+
+[RULES]
+RULE one
+IF TANK T1 LEVEL BELOW 6
+AND SYSTEM CLOCKTIME >= 8:00 AM
+OR LINK PU1 FLOW > 100
+THEN PUMP PU1 STATUS IS OPEN
+AND VALVE V1 SETTING IS 45
+ELSE PUMP PU1 STATUS IS CLOSED
+PRIORITY 2
+RULE two
+IF NODE J2 PRESSURE < 30
+THEN PIPE 13 STATUS IS 1
+AND PIPE 15 STATUS IS 0
+DISABLED
+RULE three
+IF SYSTEM DEMAND > 50
+THEN PUMP PU3 SETTING IS 0.8
+RULE four
+IF JUNCTION J9 HEAD > 5                ; unknown node: this rule is dropped and the rest skipped
+THEN PUMP PU1 STATUS IS OPEN
+RULE five
+IF TANK T2 FILLTIME > 2
+THEN PIPE 14 STATUS IS CLOSED
+
+[SOURCES]
+R1    CONCEN     1.5    P1
+J1    MASS       20
+J2    2.5
+J4    SETPOINT   0.8  *
+J6    FLOWPACED  0.3
+
+[EMITTERS]
+J2    3.5
+J5    0.75
+T1    2                      ; a tank: ignored
+
+[LEAKAGE]
+10    1.5   0.2
+11    0.5   0
+PU1   1     1                ; a pump: ignored
+
+[QUALITY]
+J1    0.8
+J2    J6   0.4
+10    15   0.6
+T1    1.2
+
+[REACTIONS]
+ORDER BULK 1
+ORDER WALL 0
+ORDER TANK 1
+GLOBAL BULK -0.5
+GLOBAL WALL -1
+BULK 10 -0.3
+WALL 11 -0.8
+WALL 12 15 -0.6
+BULK J1 J2 -0.1              ; lexicographic range, matches nothing
+TANK T1 -0.2
+TANK T2 T3 -0.4
+LIMITING POTENTIAL 0.1
+ROUGHNESS CORRELATION 0
+
+[MIXING]
+T1    2COMP   0.3
+T2    FIFO
+T3    LIFO
+J1    MIXED                  ; a junction: ignored
+
+[STATUS]
+PU1   0.9
+V2    OPEN
+V5    CLOSED
+10    15   OPEN
+V1    V3   CLOSED
+13    OPEN
+
+[ENERGY]
+GLOBAL EFFIC 80
+GLOBAL PRICE 0.12
+GLOBAL PATTERN P1
+PUMP PU1 PRICE 0.1
+PUMP PU1 PATTERN P2
+PUMP PU2 EFFIC EC1
+DEMAND CHARGE 5
+
+[TIMES]
+DURATION      36:00
+HYDRAULIC TIMESTEP 30 MIN
+QUALITY TIMESTEP 5 MIN
+PATTERN TIMESTEP 2 HOURS
+PATTERN START 1:00
+REPORT TIMESTEP 1:00
+REPORT START 2
+RULE TIMESTEP 10 MIN
+START CLOCKTIME 1:50 PM
+STATISTIC AVERAGE
+
+[REPORT]
+PAGE 60
+STATUS FULL
+SUMMARY NO
+NODES J1 J2 T1
+LINKS ALL
+PRESSURE PRECISION 3
+HEAD BELOW 50
+HEADLOSS ABOVE 10
+VELOCITY NO
+MESSAGES YES
+ENERGY YES
+DEMAND YES
+QUALITY
+FILE edges.rpt
+
+[OPTIONS]
+UNITS       CMH
+PRESSURE    KPA
+HEADLOSS    D-W
+QUALITY     Chlorine mg/L
+VISCOSITY   1.1
+DIFFUSIVITY 1.2
+SPECIFIC GRAVITY 1.02
+TRIALS      50
+ACCURACY    0.002
+UNBALANCED  CONTINUE 10
+PATTERN     P2
+DEMAND MULTIPLIER 1.1
+DEMAND MODEL PDA
+MINIMUM PRESSURE 5
+REQUIRED PRESSURE 20
+PRESSURE EXPONENT 0.6
+EMITTER EXPONENT 0.6
+BACKFLOW ALLOWED NO
+TOLERANCE 0.02
+HEADERROR   0.01
+FLOWCHANGE  0.05
+DAMPLIMIT   0.5
+CHECKFREQ 3
+MAXCHECK 12
+RQTOL 0.001
+HTOL 0.001
+QTOL 0.002
+MAP edges.map
+SEGMENTS 50
+HYDRAULICS SAVE edges.hyd
+
+[COORDINATES]
+J1  10  20
+J2  30  40
+J9  1   1
+T1  50  60
+
+[VERTICES]
+10  15  25
+
+[LABELS]
+10 20 "a label"
+
+[TAGS]
+NODE J1 north
+LINK 10 trunk
+
+[BACKDROP]
+DIMENSIONS 0 0 100 100
+
+[END]

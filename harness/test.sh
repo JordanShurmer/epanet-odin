@@ -93,6 +93,7 @@ for f in $EP/src/*.c $EP/src/util/*.c; do
     run $CC $CFLAGS -c "$f" -o "$B/c/$(basename "$f" .c).o" || bad "compile $f"
 done
 run $CC $CFLAGS -c harness/run.c -o "$B/run.o" || bad "compile run.c"
+run $CC $CFLAGS -c harness/dumpnet.c -o "$B/dumpnet.o" || bad "compile dumpnet.c"
 
 cp "$B"/c/*.o "$B/odin/"
 # Each object that defines a swapped symbol goes into the odin build twice.
@@ -126,10 +127,12 @@ run $CC $CFLAGS -c harness/bridge.c -o "$B/bridge.o" || bad "compile bridge.c"
 run $CC $CFLAGS -DSHADOW -c harness/bridge.c -o "$B/bridge-shadow.o" || bad "compile bridge.c -DSHADOW"
 
 run $CC $CFLAGS "$B/run.o" "$B"/c/*.o -lm -o "$B/run-c" || bad "link run-c"
+run $CC $CFLAGS "$B/dumpnet.o" "$B"/c/*.o -lm -o "$B/dumpnet-c" || bad "link dumpnet-c"
+run "$ODIN" build cmd/dumpnet -out:"$B/dumpnet-odin" $ODINFLAGS -vet -strict-style || bad "odin build dumpnet"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
 [ "$_fail" -eq 0 ] || { tally "epanet-odin"; exit 1; }
-ok "build c odin shadow"
+ok "build c odin shadow dumpnet"
 
 # ── compare ─────────────────────────────────────────────────────────────
 # same A B — exit 0 when every number on every line is within TOL (relative)
@@ -188,7 +191,22 @@ check() {
     done
 }
 
+# check_parse FIXTURE — read one network with EPANET's reader and with the
+# Odin reader (cmd/dumpnet) and judge the two prints of the project.
+check_parse() {
+    inp=$1
+    fx=$(basename "$inp" .inp)
+    "$B/dumpnet-c" "$inp" "$B/$fx.dump.rpt" >"$B/$fx.dump.c.txt" 2>&1
+    "$B/dumpnet-odin" "$inp" >"$B/$fx.dump.odin.txt" 2>&1
+    if cmp -s "$B/$fx.dump.c.txt" "$B/$fx.dump.odin.txt"; then
+        ok "$fx parse bit-exact ($(wc -l <"$B/$fx.dump.c.txt") lines)"
+    else
+        bad "$fx parse" "$(diff "$B/$fx.dump.c.txt" "$B/$fx.dump.odin.txt" | head -5)" "diff $B/$fx.dump.c.txt $B/$fx.dump.odin.txt"
+    fi
+}
+
 for inp in $FIXTURES; do
+    check_parse "$inp"
     check "$inp" ""
     check "$inp" stepq
 done
