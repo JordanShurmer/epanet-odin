@@ -76,4 +76,14 @@ Duration            24:00
 Hydraulic Timestep  1:00
 Pattern Timestep    1:00
 
+[REPORT]
+STATUS    FULL
+MESSAGES  YES
+NODES     ALL
+LINKS     ALL
+DEMAND    PRECISION 3
+
+[TIMES]
+STATISTIC MAXIMUM
+
 [END]

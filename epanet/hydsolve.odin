@@ -21,14 +21,14 @@ Balance :: struct {
 // hydsolve returns the trials taken, the convergence error and 0 or 110
 // (the matrix went ill-conditioned), and leaves the rest of what it
 // found in hyd.
-hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, hooks: ^Hooks) -> (iter: int, relerr: f64, errcode: int) {
+hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr: ^Project) -> (iter: int, relerr: f64, errcode: int) {
 	next_check := hyd.check_freq
 	hyd.relax = 1
 	bal: Balance
 	hyd.deficient_nodes = 0
 	hyd.demand_reduction = 0
 
-	if hyd.status_report do hooks.write_relerr(hooks.ctx, 0, 0)
+	if hyd.status_report do writerelerr(pr, 0, 0)
 	max_trials := hyd.max_iter
 	if hyd.extra_iter > 0 do max_trials += hyd.extra_iter
 	iter = 1
@@ -41,13 +41,13 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, ho
 		// Ill-conditioned: a control valve at that row is fixed and we
 		// go round again; anything else ends it with no solution.
 		if errcode > 0 {
-			if bad_valve(net, hyd, hooks, int(m.order[errcode])) do continue
+			if bad_valve(net, hyd, pr, int(m.order[errcode])) do continue
 			break
 		}
 
 		for i in 1 ..= net.njuncs do hyd.head[i] = m.f[m.row[i]]
-		relerr = new_flows(net, hyd, hooks, &bal)
-		if hyd.status_report do hooks.write_relerr(hooks.ctx, i32(iter), relerr)
+		relerr = new_flows(net, hyd, pr, &bal)
+		if hyd.status_report do writerelerr(pr, iter, relerr)
 
 		// Damping and the valve checks.
 		hyd.relax = 1
@@ -55,28 +55,28 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, ho
 		if hyd.damp_limit > 0 {
 			if relerr <= hyd.damp_limit {
 				hyd.relax = 0.6
-				valve_change = valve_status(net, hyd, hooks)
+				valve_change = valve_status(net, hyd, pr)
 			}
 		} else {
-			valve_change = valve_status(net, hyd, hooks)
+			valve_change = valve_status(net, hyd, pr)
 		}
 
-		if has_converged(net, hyd, hooks, relerr, &bal) {
+		if has_converged(net, hyd, pr, relerr, &bal) {
 			if iter > hyd.max_iter do break
 			stat_change := valve_change
-			if link_status(net, hyd, hooks) do stat_change = true
-			if pswitch(net, hyd, hooks) do stat_change = true
+			if link_status(net, hyd, pr) do stat_change = true
+			if pswitch(net, hyd, pr) do stat_change = true
 			if !stat_change do break
 			next_check = iter + hyd.check_freq
 		} else if iter <= hyd.max_check && iter == next_check {
-			link_status(net, hyd, hooks)
+			link_status(net, hyd, pr)
 			next_check += hyd.check_freq
 		}
 		iter += 1
 	}
 
 	if errcode > 0 {
-		hooks.write_hyderr(hooks.ctx, m.order[errcode])
+		writehyderr(pr, int(m.order[errcode]))
 		errcode = 110
 	}
 
@@ -93,7 +93,7 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, ho
 
 // bad_valve: does node n belong to an active PRV, PSV or FCV? Then that
 // valve's setting cannot be met: fix its status and say so.
-bad_valve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks, n: int) -> bool {
+bad_valve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, n: int) -> bool {
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]
 		n1, n2 := int(net.n1[k]), int(net.n2[k])
@@ -101,7 +101,7 @@ bad_valve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks,
 		t := net.link_type[k]
 		if t == .PRV || t == .PSV || t == .FCV {
 			if hyd.status[k] == .ACTIVE {
-				if hyd.status_report do hooks.write_badvalve(hooks.ctx, k)
+				if hyd.status_report do writebadvalve(pr, int(k))
 				hyd.status[k] = t == .FCV ? .XFCV : .XPRESSURE
 				return true
 			}
@@ -113,7 +113,7 @@ bad_valve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks,
 
 // pswitch applies the simple controls that watch a junction's pressure,
 // once a solution is in hand. Returns whether any link changed.
-pswitch :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks) -> bool {
+pswitch :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool {
 	anychange := false
 	for i in 1 ..= net.ncontrols {
 		k := net.control_link[i]
@@ -145,7 +145,7 @@ pswitch :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks) -
 		if change {
 			hyd.status[k] = net.control_status[i]
 			if t > .PIPE do hyd.setting[k] = net.control_setting[i]
-			if hyd.status_report do hooks.write_statchange(hooks.ctx, k, s, hyd.status[k])
+			if hyd.status_report do writestatchange(pr, int(k), s, hyd.status[k])
 			anychange = true
 		}
 	}
@@ -154,7 +154,7 @@ pswitch :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks) -
 
 // new_flows corrects every flow from the new heads and returns the
 // relative flow change (or the absolute one when the total flow is tiny).
-new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks, bal: ^Balance) -> f64 {
+new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, bal: ^Balance) -> f64 {
 	qsum, dqsum := 0.0, 0.0
 	bal.max_flow_change = 0
 	bal.max_flow_link = 1
@@ -277,18 +277,11 @@ check_hyd_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^
 	}
 }
 
-has_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks, relerr: f64, bal: ^Balance) -> bool {
+has_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, relerr: f64, bal: ^Balance) -> bool {
 	if relerr > hyd.hacc do return false
 	check_hyd_balance(net, hyd, bal)
 	if hyd.status_report {
-		hooks.write_hydbal(
-			hooks.ctx,
-			bal.max_flow_change * net.ucf_flow,
-			bal.max_head_error * net.ucf_head,
-			i32(bal.max_flow_link),
-			i32(bal.max_flow_node),
-			i32(bal.max_head_link),
-		)
+		writehydbal(pr, bal.max_flow_change * net.ucf_flow, bal.max_head_error * net.ucf_head, bal.max_flow_link, bal.max_flow_node, bal.max_head_link)
 	}
 	if hyd.head_error_limit > 0 && bal.max_head_error > hyd.head_error_limit do return false
 	if hyd.flow_change_limit > 0 && bal.max_flow_change > hyd.flow_change_limit do return false

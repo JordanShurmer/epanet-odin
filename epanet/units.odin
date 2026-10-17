@@ -7,6 +7,7 @@ package epanet
 // internal units: feet, cfs, seconds (initunits / convertunits).
 
 import "core:c/libc"
+import "core:strings"
 
 AGETOL : f64 : 0.01 // default water age tolerance, hours
 CHEMTOL : f64 : 0.01 // default concentration tolerance
@@ -194,10 +195,28 @@ init_tanks :: proc(p: ^Project) {
 	}
 }
 
-// init_units: the factors from internal units to the user's.
+FLOW_UNITS_TEXT := [Flow_Units]string {
+	.CFS = "cfs", .GPM = "gpm", .MGD = "mgd", .IMGD = "Imgd", .AFD = "a-f/d",
+	.LPS = "L/s", .LPM = "Lpm", .MLD = "ML/d", .CMH = "m3/h", .CMD = "m3/d", .CMS = "m3/s",
+}
+PRESSURE_UNITS_TEXT := [Pressure_Units]string {
+	.PSI = "psi", .KPA = "kPa", .METERS = "m", .BAR = "bar", .FEET = "ft", .DEFAULTUNIT = "",
+}
+
+// init_units: the factors from internal units to the user's, and the
+// units each reported variable prints with.
 init_units :: proc(p: ^Project) {
 	dcf, qcf, hcf, wcf: f64
+	f := &p.rpt.fields
+	f[.DEMAND].units = FLOW_UNITS_TEXT[p.flow_units]
+	f[.FLOW].units = FLOW_UNITS_TEXT[p.flow_units]
+	f[.FRICTION].units = ""
 	if p.units == .SI {
+		f[.ELEV].units, f[.HEAD].units, f[.LENGTH].units = "m", "m", "m"
+		f[.DIAM].units = "mm"
+		f[.VELOCITY].units = "m/s"
+		f[.HEADLOSS].units = "/1000m"
+		f[.POWER].units = "kw"
 		dcf = 1000 * M_PER_FT
 		qcf = LPS_PER_CFS
 		#partial switch p.flow_units {
@@ -215,6 +234,11 @@ init_units :: proc(p: ^Project) {
 		hcf = M_PER_FT
 		wcf = KW_PER_HP
 	} else {
+		f[.ELEV].units, f[.HEAD].units, f[.LENGTH].units = "ft", "ft", "ft"
+		f[.DIAM].units = "in"
+		f[.VELOCITY].units = "fps"
+		f[.HEADLOSS].units = "/1000ft"
+		f[.POWER].units = "hp"
 		dcf = 12
 		qcf = 1
 		#partial switch p.flow_units {
@@ -230,6 +254,7 @@ init_units :: proc(p: ^Project) {
 		hcf = 1
 		wcf = 1
 	}
+	f[.PRESSURE].units = PRESSURE_UNITS_TEXT[p.pressure_units]
 	pcf := PSI_PER_FT * p.hyd.spgrav
 	#partial switch p.pressure_units {
 	case .METERS:
@@ -241,8 +266,18 @@ init_units :: proc(p: ^Project) {
 	case .FEET:
 		pcf = 1
 	}
+	f[.QUALITY].units = ""
 	ccf := 1.0
-	if p.q.kind == .CHEM do ccf = 1 / L_PER_FT3
+	#partial switch p.q.kind {
+	case .CHEM:
+		ccf = 1 / L_PER_FT3
+		f[.QUALITY].units = clip(p.chem_units, MAXID)
+		f[.REACTRATE].units = strings.concatenate({clip(p.chem_units, MAXID), "/day"})
+	case .AGE:
+		f[.QUALITY].units = "hrs"
+	case .TRACE:
+		f[.QUALITY].units = "% from"
+	}
 
 	u := &p.ucf
 	u[.DEMAND] = qcf
@@ -260,7 +295,13 @@ init_units :: proc(p: ^Project) {
 	u[.FRICTION] = 1
 	u[.POWER] = wcf
 	u[.VOLUME] = hcf * hcf * hcf
-	u[.TIME] = p.times.hstep < 1800 ? 1.0 / 60.0 : 1.0 / 3600.0
+	if p.times.hstep < 1800 {
+		u[.TIME] = 1.0 / 60.0
+		f[.TIME].units = "min"
+	} else {
+		u[.TIME] = 1.0 / 3600.0
+		f[.TIME].units = "hrs"
+	}
 
 	net := &p.net
 	net.ucf_flow = qcf

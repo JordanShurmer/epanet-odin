@@ -198,7 +198,7 @@ demands :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times) {
 
 // controls applies the simple controls that act on a tank level or the
 // clock. Returns how many links changed.
-controls :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks) -> int {
+controls :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project) -> int {
 	setsum := 0
 	for i in 1 ..= net.ncontrols {
 		if !net.control_enabled[i] do continue
@@ -233,7 +233,7 @@ controls :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hook
 			hyd.status[k] = s2
 			hyd.setting[k] = k2
 			if net.link_type[k] == .PCV do net.r[k] = pcv_loss_coeff(net, k, k2)
-			if hyd.status_report_any do hooks.write_control_action(hooks.ctx, i32(k), i32(i))
+			if hyd.status_report_any do writecontrolaction(pr, int(k), i)
 			setsum += 1
 		}
 	}
@@ -245,7 +245,7 @@ controls :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hook
 // timestep: how long until something changes — the next pattern period,
 // report time, a tank filling or emptying, a control, or a rule — and
 // moves the tanks to the levels they will have then.
-timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, nrules: int) -> i64 {
+timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project, nrules: int) -> i64 {
 	tstep := t.hstep
 	n := (t.htime + t.pstart) / t.pstep + 1
 	dt := n * t.pstep - t.htime
@@ -255,7 +255,7 @@ timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, nrul
 	tank_timestep(net, hyd, &tstep)
 	control_timestep(net, hyd, t, &tstep)
 	if nrules > 0 {
-		rule_timestep(net, hyd, t, hooks, &tstep)
+		rule_timestep(net, hyd, t, pr, &tstep)
 	} else {
 		tank_levels(net, hyd, tstep)
 	}
@@ -333,7 +333,7 @@ control_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Tim
 
 // rule_timestep walks the clock forward in rule-evaluation steps, moving
 // the tanks as it goes, until a rule fires or tstep is used up.
-rule_timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, tstep: ^i64) {
+rule_timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project, tstep: ^i64) {
 	tnow := t.htime
 	tmax := tnow + tstep^
 	dt := t.rulestep
@@ -347,7 +347,7 @@ rule_timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks,
 		tank_levels(net, hyd, dt1)
 		// The rules see the clock at the end of the increment.
 		t.htime = htime
-		fired := check_rules(net, hyd, t, hooks, dt1) > 0
+		fired := check_rules(net, hyd, t, pr, dt1) > 0
 		t.htime = tnow
 		if fired do break
 		dt = min(dt, tmax - htime)
@@ -607,24 +607,16 @@ init_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, init
 
 // run_hyd solves one period: the demands and controls in force, then the
 // network. Returns the error or warning code.
-run_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, t: ^Times, hooks: ^Hooks) -> (now: i64, errcode: int) {
+run_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, t: ^Times, pr: ^Project) -> (now: i64, errcode: int) {
 	now = t.htime
 	demands(net, hyd, t)
-	controls(net, hyd, t, hooks)
-	iter, relerr, err := hydsolve(net, hyd, m, hooks)
+	controls(net, hyd, t, pr)
+	iter, relerr, err := hydsolve(net, hyd, m, pr)
 	errcode = err
 	if errcode == 0 {
-		if hyd.status_report_any do hooks.write_hydstat(hooks.ctx, i32(iter), relerr)
+		if hyd.status_report_any do writehydstat(pr, iter, relerr)
 		if relerr > hyd.hacc && hyd.extra_iter == -1 do hyd.haltflag = true
-		// A demand-driven run counts its pressure-deficient junctions here
-		// (EPANET does it inside its warning writer).
-		if hyd.demand_model == .DDA {
-			hyd.deficient_nodes = 0
-			for i in 1 ..= net.njuncs {
-				if hyd.head[i] < net.el[i] && hyd.node_demand[i] > 0 do hyd.deficient_nodes += 1
-			}
-		}
-		errcode = int(hooks.write_hydwarn(hooks.ctx, i32(iter), relerr))
+		errcode = writehydwarn(pr, iter, relerr)
 	}
 	return
 }
@@ -632,14 +624,14 @@ run_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, t: 
 // next_hyd closes the period: pump energy, the results to the file, the
 // length of the next step with the tanks moved to it, and the clock
 // advanced; at the end of the run the flow balance is closed.
-next_hyd :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks) -> (tstep: i64, errcode: int) {
+next_hyd :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project) -> (tstep: i64, errcode: int) {
 	get_all_pumps_energy(net, hyd)
-	if hyd.saveflag do errcode = int(hooks.save_hyd(hooks.ctx))
+	if hyd.saveflag do errcode = savehyd(pr, t.htime)
 	if hyd.haltflag do t.htime = t.dur
 
 	hydstep: i64 = 0
-	if t.htime < t.dur do hydstep = timestep(net, hyd, t, hooks, net.nrules)
-	if hyd.saveflag do errcode = int(hooks.save_hydstep(hooks.ctx, hydstep))
+	if t.htime < t.dur do hydstep = timestep(net, hyd, t, pr, net.nrules)
+	if hyd.saveflag do errcode = savehydstep(pr, hydstep)
 
 	if t.dur == 0 {
 		add_energy(net, hyd, t, 0)
@@ -655,7 +647,7 @@ next_hyd :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks) -> (
 		}
 	} else {
 		end_flow_balance(hyd, t)
-		if hyd.status_report_any do hooks.write_flowbalance(hooks.ctx)
+		if hyd.status_report_any do writeflowbalance(pr)
 		t.htime += 1
 		if hyd.openqflag do t.qtime += 1
 	}

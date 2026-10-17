@@ -698,13 +698,13 @@ optionchoice :: proc(ps: ^Parser, n: int) -> int {
 	case match(tok0, "HYDR"):
 		if n < 2 do return 0
 		if match(ps.tok[1], "USE") {
-			p.hyd_file = .USE
+			p.out.hydflag = .USE
 		} else if match(ps.tok[1], "SAVE") {
-			p.hyd_file = .SAVE
+			p.out.hydflag = .SAVE
 		} else {
 			return set_error(ps, 1, 213)
 		}
-		p.hyd_fname = strings.clone(ps.tok[2])
+		p.out.hyd_fname = strings.clone(ps.tok[2])
 	case match(tok0, "QUAL"):
 		if n < 1 do return 0
 		switch {

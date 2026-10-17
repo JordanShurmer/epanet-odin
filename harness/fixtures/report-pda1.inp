@@ -1,0 +1,36 @@
+[TITLE]
+report pda1: one junction short of its pressure, so the status report
+says "1 node had its demand reduced"
+
+[JUNCTIONS]
+J1   50   10
+J2   95   10
+
+[RESERVOIRS]
+R1   100
+
+[PIPES]
+P1   R1  J1  1000  12  120
+P2   J1  J2  1000  12  120
+
+[TIMES]
+Duration            2:00
+Hydraulic Timestep  1:00
+
+[REPORT]
+STATUS   FULL
+NODES    ALL
+LINKS    ALL
+
+[OPTIONS]
+Units      GPM
+Headloss   H-W
+Demand Model      PDA
+Minimum Pressure  0
+Required Pressure 20
+Pressure Exponent 0.5
+Trials     80
+Accuracy   0.001
+Unbalanced Continue 10
+
+[END]

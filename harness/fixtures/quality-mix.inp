@@ -109,4 +109,14 @@ Hydraulic Timestep  1:00
 Quality Timestep    0:05
 Pattern Timestep    1:00
 
+[REPORT]
+STATUS    FULL
+NODES     ALL
+LINKS     ALL
+QUALITY   YES
+REACTION  YES
+
+[TIMES]
+STATISTIC RANGE
+
 [END]

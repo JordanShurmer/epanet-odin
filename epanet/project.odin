@@ -7,6 +7,7 @@ package epanet
 // internal units, the validator (validate.odin) checks it. Everything a
 // project holds comes out of its own arena, so project_free is one call.
 
+import "core:c/libc"
 import "core:mem/virtual"
 
 // Field numbers EPANET's reported variables; ucf[field] converts the
@@ -43,29 +44,50 @@ Hyd_File :: enum i32 {
 
 // Report_Field is how one reported variable prints.
 Report_Field :: struct {
-	enabled:   bool,
-	precision: int,
-	lo, hi:    f64, // only values outside are reported
+	name, units: string,
+	enabled:     bool,
+	precision:   int,
+	lo, hi:      f64, // only values outside are reported
 }
 
-// Report_Options are the [REPORT] section; they shape output only.
+// Report_Options are the [REPORT] section and the report file as it is
+// being written (report.odin).
 Report_Options :: struct {
-	page_size:                          int,
-	summary, messages, energy:          bool,
-	status:                             int, // 0 no, 1 yes, 2 full
-	nodes, links:                       int, // 0 none, 1 all, 2 those flagged
-	tstat:                              Time_Stat,
-	fields:                             [Field]Report_Field,
-	rpt2_fname:                         string,
+	page_size:                 int,
+	summary, messages, energy: bool,
+	status:                    int, // 0 no, 1 yes, 2 full
+	nodes, links:              int, // 0 none, 1 all, 2 those flagged
+	tstat:                     Time_Stat,
+	fields:                    [Field]Report_Field,
+	rpt1_fname, rpt2_fname:    string,
+	// the file in progress
+	file:                      ^libc.FILE,
+	rptflag:                   bool, // the formatted report is wanted
+	fprinterr:                 bool, // a write failed
+	page_num, line_num:        int,
+	nperiods:                  int, // reporting periods saved so far
+	callback:                  proc "c" (user: rawptr, pr: rawptr, line: cstring), // takes every line instead of the file
+	callback_user:             rawptr,
+}
+
+// Outfile is the binary output file and the hydraulics file (output.odin).
+Outfile :: struct {
+	hyd_fname, out_fname:                string,
+	outflag, hydflag:                    Hyd_File,
+	save_hflag, save_qflag, saveflag:    bool,
+	hyd_offset, out_offset1, out_offset2: i64,
+	out_file, hyd_file, tmp_out_file:    ^libc.FILE,
 }
 
 Project :: struct {
 	arena: virtual.Arena, // every allocation below lives here
 	net:   Network,
 	hyd:   Hydraulics,
+	m:     Smatrix,
 	q:     Quality,
 	times: Times,
 	rpt:   Report_Options,
+	out:   Outfile,
 	fb:    Flow_Balance,
 
 	title:                        [3]string,
@@ -79,8 +101,10 @@ Project :: struct {
 	units:                        Units_System,
 	flow_units:                   Flow_Units,
 	pressure_units:               Pressure_Units,
-	hyd_file:                     Hyd_File,
-	hyd_fname, map_fname:         string,
+	inp_fname, map_fname:         string,
+	tmp_hyd_fname, tmp_out_fname: string, // scratch files
+	tmp_stat_fname:               string,
+	warnflag:                     int, // the last run's warning code
 	chem_name, chem_units:        string,
 	def_pat_id:                   string,
 	kbulk, kwall, rfactor:        f64, // global reaction coefficients, per day until converted

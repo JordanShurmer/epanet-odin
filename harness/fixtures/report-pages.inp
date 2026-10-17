@@ -1,0 +1,112 @@
+[TITLE]
+report pages: tables that run over pages, a setting changed by a
+pressure control, and a junction cut off behind a closed pipe
+
+[JUNCTIONS]
+J1   99.5   20
+J2   99   20
+J3   98.5   20
+J4   98   20
+J5   97.5   20
+J6   97   20
+J7   96.5   20
+J8   96   20
+J9   95.5   20
+J10   95   20
+J11   94.5   20
+J12   94   20
+J13   93.5   20
+J14   93   20
+J15   92.5   20
+J16   92   20
+J17   91.5   20
+J18   91   20
+J19   90.5   20
+J20   90   20
+J21   89.5   20
+J22   89   20
+J23   88.5   20
+J24   88   20
+J25   87.5   20
+J26   87   20
+J27   86.5   20
+J28   86   20
+J29   85.5   20
+J30   85   20
+J31  100  5           ; behind the closed pipe
+
+[RESERVOIRS]
+R1   300
+
+[TANKS]
+T1   180  10  2  30  40
+
+[PIPES]
+P1   J1  J2  500  8  110
+P2   J2  J3  500  8  110
+P3   J3  J4  500  8  110
+P4   J4  J5  500  8  110
+P5   J5  J6  500  8  110
+P6   J6  J7  500  8  110
+P7   J7  J8  500  8  110
+P8   J8  J9  500  8  110
+P9   J9  J10  500  8  110
+P10   J10  J11  500  8  110
+P11   J11  J12  500  8  110
+P12   J12  J13  500  8  110
+P13   J13  J14  500  8  110
+P14   J14  J15  500  8  110
+P15   J15  J16  500  8  110
+P16   J16  J17  500  8  110
+P17   J17  J18  500  8  110
+P18   J18  J19  500  8  110
+P19   J19  J20  500  8  110
+P20   J20  J21  500  8  110
+P21   J21  J22  500  8  110
+P22   J22  J23  500  8  110
+P23   J23  J24  500  8  110
+P24   J24  J25  500  8  110
+P25   J25  J26  500  8  110
+P26   J26  J27  500  8  110
+P27   J27  J28  500  8  110
+P28   J28  J29  500  8  110
+P29   J29  J30  500  8  110
+P30   J30  T1   500  8  110
+PDEAD J30  J31  300  6  110  0  CLOSED
+
+[PUMPS]
+PU1  R1  J1  HEAD HC1
+
+[CURVES]
+HC1  0     200
+HC1  1000  150
+HC1  2000  50
+
+[CONTROLS]
+LINK PU1 0.9 IF NODE J15 ABOVE 70
+LINK PU1 1.1 IF NODE J15 BELOW 40
+
+[ENERGY]
+GLOBAL EFFIC 75
+GLOBAL PRICE 0.1
+
+[TIMES]
+Duration            6:00
+Hydraulic Timestep  1:00
+
+[REPORT]
+PAGE     30
+STATUS   FULL
+SUMMARY  YES
+ENERGY   YES
+NODES    ALL
+LINKS    ALL
+
+[OPTIONS]
+Units      GPM
+Headloss   H-W
+Trials     80
+Accuracy   0.001
+Unbalanced Continue 10
+
+[END]

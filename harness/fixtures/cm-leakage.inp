@@ -55,4 +55,13 @@ Duration            24:00
 Hydraulic Timestep  1:00
 Pattern Timestep    1:00
 
+[REPORT]
+STATUS    YES
+NODES     ALL
+LINKS     ALL
+PRESSURE  BELOW 60
+FLOW      ABOVE 1
+HEADLOSS  PRECISION 4
+REACTION  YES
+
 [END]

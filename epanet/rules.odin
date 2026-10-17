@@ -14,7 +14,7 @@ Pending :: struct {
 // check_rules evaluates every rule for the interval ending now (the last
 // dt seconds), carries out the actions that fire, and returns how many
 // links actually changed.
-check_rules :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, dt: i64) -> int {
+check_rules :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project, dt: i64) -> int {
 	time1 := t.htime - dt + 1 // start of the interval
 	list := make([]Pending, len(net.action_link), context.temp_allocator)
 	n := 0
@@ -27,7 +27,7 @@ check_rules :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, d
 		}
 	}
 	if n == 0 do return 0
-	return take_actions(net, hyd, hooks, list[:n])
+	return take_actions(net, hyd, pr, list[:n])
 }
 
 eval_premises :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, time1: i64, i: int) -> bool {
@@ -192,7 +192,7 @@ add_actions :: proc "contextless" (net: ^Network, list: []Pending, n0: int, i: i
 
 // take_actions carries the list out, newest first, and counts the links
 // that changed.
-take_actions :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks, list: []Pending) -> int {
+take_actions :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, list: []Pending) -> int {
 	tol := 1e-3
 	n := 0
 	for e := len(list) - 1; e >= 0; e -= 1 {
@@ -222,7 +222,7 @@ take_actions :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hoo
 		}
 		if flag {
 			n += 1
-			if hyd.status_report_any do hooks.write_rule_action(hooks.ctx, i32(k), list[e].rule)
+			if hyd.status_report_any do writeruleaction(pr, int(k), pr.rule_label[list[e].rule])
 		}
 	}
 	return n

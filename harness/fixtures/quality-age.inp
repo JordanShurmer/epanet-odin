@@ -91,4 +91,13 @@ Hydraulic Timestep  1:00
 Quality Timestep    0:05
 Pattern Timestep    1:00
 
+[REPORT]
+NODES     ALL
+LINKS     ALL
+QUALITY   PRECISION 3
+STATE     YES
+
+[TIMES]
+STATISTIC MINIMUM
+
 [END]

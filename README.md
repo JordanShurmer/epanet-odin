@@ -39,11 +39,16 @@ epanet/         the Odin package `epanet` — the rewrite
                   other data, the unit factors, conversion to internal units
   validate.odin   tank levels, pump curve fitting, patterns and curves
   dump.odin       the project as text, every field, for the comparison
+  report.odin     the report file: logo, summary, status lines, warnings,
+                  energy and results tables, errors
+  output.odin     the binary output file and the hydraulics file
+  errors.odin     EPANET's error messages by code
 cmd/dumpnet/    reads an .inp with the Odin reader and prints the project
 harness/        the plug-in validation
   test.sh         builds the three binaries from EPANET's sources and compares
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
-  run.c           driver: every node and link value and quality, every step, %.17g
+  run.c           driver: every node and link value and quality, every step, %.17g,
+                  and the report, output and hydraulics files when asked
   dumpnet.c       the twin of cmd/dumpnet over EPANET's own reader
   fixtures/       small networks that reach the branches the real ones do not
   out.sh          the ✓/✗ output vocabulary the script speaks
@@ -149,8 +154,7 @@ Ported, bit-exact on every fixture:
 7. **The run and the rules** — `openhyd`'s `inithyd`, `runhyd`, `nexthyd`
    (`hydraul.odin`) and the rule engine (`rules.odin`): premises, the
    action list with priorities, the rule time step. The whole hydraulic
-   and quality run is now Odin's; what stays C's is the report writer and
-   the hydraulics file, behind `Hooks`.
+   and quality run is now Odin's.
 
 8. **The reader** — `input1.c`, `input2.c`, `input3.c` and the parsing
    half of `rules.c` (`project.odin`, `parse.odin`, `parse2.odin`,
@@ -173,13 +177,30 @@ Ported, bit-exact on every fixture:
    line's last token keep its line end, so `"600" 8 120 1.5` reads 1.5 as
    no number.
 
+9. **The report and the files** — `report.c`, `output.c` and the file
+   opening in `project.c` (`report.odin`, `output.odin`, `errors.odin`).
+   The engine writes its own status lines, warnings and errors now (the
+   last of `Hooks` is gone: every engine proc takes the project), and
+   the report file is written whole: logo, summary, the hydraulic status
+   report, the energy table, the node and link tables read back from the
+   output file with their page breaks and continuation headings, the
+   reporting limits, the time statistics. The binary output file (prolog,
+   energy, every reporting period, the time statistic, the reaction rates,
+   the epilog) and the hydraulics file (written per period, read back for
+   a quality run) are Odin's too. Text goes through the C library's
+   formatting, so the bytes are EPANET's. Checked by `run.c` writing all
+   three files from each build and `test.sh` diffing them, the report less
+   its dates: identical on every fixture, with two report fixtures added
+   for what the networks did not reach (tables over several pages, a
+   setting changed by a pressure control, a junction cut off behind a
+   closed pipe, one pressure-deficient node). Still C's: the input error
+   messages (`inperrmsg`, `ruleerrmsg`) and `clocktime`'s progress text.
+
 Next, in order:
 
-9. **Reporting and the output file** — `report.c`, `output.c`, the
-   hydraulics file: the last of `Hooks` goes away.
 10. **The toolkit API** — `EN_*` over the Odin project, so a program links
     the Odin library instead of `libepanet2.a`; `run.c` built against it
-    must print what it prints against EPANET.
+    must print what it prints against EPANET, files included.
 
 ## Living inside bywater-mill
 

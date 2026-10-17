@@ -112,6 +112,47 @@ Quality_C :: struct {
 	segs:                                               ^Segments,
 }
 
+// Report_C is EPANET's Report struct as the bridge shows it, with the
+// fields of the Field table as one array each.
+Report_C :: struct {
+	file:                           ^libc.FILE,
+	rptflag, fprinterr:             c.int,
+	page_size, page_num, line_num:  c.int,
+	nperiods:                       c.int,
+	summary, messages, status:      c.int,
+	energy, nodes, links, tstat:    c.int,
+	field_enabled, field_precision: [^]c.int,
+	field_lo, field_hi:             [^]f64,
+	field_name, field_units:        [^]cstring,
+	rpt1_fname, rpt2_fname:         cstring,
+	callback:                       proc "c" (user: rawptr, pr: rawptr, line: cstring),
+	callback_user:                  rawptr,
+}
+
+// Outfile_C is EPANET's Outfile struct.
+Outfile_C :: struct {
+	out_file, hyd_file, tmp_out_file:         ^libc.FILE,
+	outflag, hydflag:                         c.int,
+	save_hflag, save_qflag, saveflag:         c.int,
+	hyd_offset, out_offset1, out_offset2:     c.long,
+	hyd_fname, out_fname:                     cstring,
+	tmp_hyd_fname, tmp_out_fname, tmp_stat_fname: cstring,
+}
+
+// Strings_C: the names and the flags the report needs from the project.
+Strings_C :: struct {
+	node_id, link_id, rule_label: [^]cstring,
+	node_rpt, link_rpt:           [^]c.int,
+	title:                        [3]cstring,
+	inp_fname, map_fname:         cstring,
+	chem_name, chem_units:        cstring,
+	units, flow_units, pressure_units: c.int,
+	ucf:                          [^]f64,
+	dcost:                        f64,
+	warnflag:                     c.int,
+	pump_qmax:                    [^]f64,
+}
+
 // Project_C is what every export takes. times is EPANET's own Times
 // struct, whose layout Times matches.
 Project_C :: struct {
@@ -119,22 +160,28 @@ Project_C :: struct {
 	hyd:   ^Hydraulics_C,
 	m:     ^Matrix_C,
 	times: ^Times,
-	hooks: ^Hooks,
 	qual:  ^Quality_C,
+	rpt:   ^Report_C,
+	out:   ^Outfile_C,
+	strs:  ^Strings_C,
 }
 
-// Views is the package's own types over the C memory.
-Views :: struct {
-	net: Network,
-	hyd: Hydraulics,
-	m:   Smatrix,
-	q:   Quality,
+// Views is the package's own Project over the C memory: the arrays are
+// EPANET's in place, the scalars are copied in and (unview) back out.
+Views :: Project
+
+// cstrings: a C string table as Odin strings, from the temp allocator.
+cstrings :: proc(a: [^]cstring, n: int) -> []string {
+	out := make([]string, n, context.temp_allocator)
+	for i in 0 ..< n do out[i] = string(a[i])
+	return out
 }
 
 // view builds the slices. The curve and pattern tables need an allocator:
 // the temp allocator, which the export frees on the way out.
 view :: proc(p: ^Project_C) -> (v: Views) {
 	n, h, mc := p.net, p.hyd, p.m
+	v.times = p.times^
 	nn, nj, nl := int(n.nnodes), int(n.njuncs), int(n.nlinks)
 	nt, np, nv, nk := int(n.ntanks), int(n.npumps), int(n.nvalves), int(n.ncontrols)
 	nc, npat, nd, na := int(n.ncurves), int(n.npatterns), int(n.ndemands), int(n.nadj)
@@ -239,6 +286,56 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 			segs = q.segs,
 		}
 	}
+	if r := p.rpt; r != nil {
+		v.rpt = {
+			file = r.file, rptflag = r.rptflag != 0, fprinterr = r.fprinterr != 0,
+			page_size = int(r.page_size), page_num = int(r.page_num), line_num = int(r.line_num),
+			nperiods = int(r.nperiods),
+			summary = r.summary != 0, messages = r.messages != 0, status = int(r.status),
+			energy = r.energy != 0, nodes = int(r.nodes), links = int(r.links), tstat = Time_Stat(r.tstat),
+			rpt1_fname = string(r.rpt1_fname), rpt2_fname = string(r.rpt2_fname),
+			callback = r.callback, callback_user = r.callback_user,
+		}
+		for f in Field {
+			i := int(f)
+			v.rpt.fields[f] = {
+				name = string(r.field_name[i]), units = string(r.field_units[i]),
+				enabled = r.field_enabled[i] != 0, precision = int(r.field_precision[i]),
+				lo = r.field_lo[i], hi = r.field_hi[i],
+			}
+		}
+	}
+	if o := p.out; o != nil {
+		v.out = {
+			out_file = o.out_file, hyd_file = o.hyd_file, tmp_out_file = o.tmp_out_file,
+			outflag = Hyd_File(o.outflag), hydflag = Hyd_File(o.hydflag),
+			save_hflag = o.save_hflag != 0, save_qflag = o.save_qflag != 0, saveflag = o.saveflag != 0,
+			hyd_offset = i64(o.hyd_offset), out_offset1 = i64(o.out_offset1), out_offset2 = i64(o.out_offset2),
+			hyd_fname = string(o.hyd_fname), out_fname = string(o.out_fname),
+		}
+		v.tmp_hyd_fname = string(o.tmp_hyd_fname)
+		v.tmp_out_fname = string(o.tmp_out_fname)
+		v.tmp_stat_fname = string(o.tmp_stat_fname)
+	}
+	if st := p.strs; st != nil {
+		v.node_id = cstrings(st.node_id, nn + 1)
+		v.link_id = cstrings(st.link_id, nl + 1)
+		v.rule_label = cstrings(st.rule_label, nr + 1)
+		v.node_rpt = ([^]b32)(st.node_rpt)[:nn + 1]
+		v.link_rpt = ([^]b32)(st.link_rpt)[:nl + 1]
+		for i in 0 ..< 3 do v.title[i] = string(st.title[i])
+		v.inp_fname = string(st.inp_fname)
+		v.map_fname = string(st.map_fname)
+		v.chem_name = string(st.chem_name)
+		v.chem_units = string(st.chem_units)
+		v.units = Units_System(st.units)
+		v.flow_units = Flow_Units(st.flow_units)
+		v.pressure_units = Pressure_Units(st.pressure_units)
+		for f in Field do v.ucf[f] = st.ucf[int(f)]
+		v.dcost = st.dcost
+		v.warnflag = int(st.warnflag)
+		v.pump_qmax = st.pump_qmax[:np + 1]
+	}
 	if mc != nil {
 		ncf := int(mc.ncoeffs)
 		v.m = {
@@ -253,6 +350,25 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 
 // unview writes back the scalars the package keeps in its own copy.
 unview :: proc "contextless" (p: ^Project_C, v: ^Views) {
+	p.times^ = v.times
+	if r := p.rpt; r != nil {
+		r.file = v.rpt.file
+		r.rptflag = c.int(v.rpt.rptflag)
+		r.fprinterr = c.int(v.rpt.fprinterr)
+		r.page_num = c.int(v.rpt.page_num)
+		r.line_num = c.int(v.rpt.line_num)
+		r.nperiods = c.int(v.rpt.nperiods)
+	}
+	if o := p.out; o != nil {
+		o.out_file = v.out.out_file
+		o.hyd_file = v.out.hyd_file
+		o.tmp_out_file = v.out.tmp_out_file
+		o.save_hflag = c.int(v.out.save_hflag)
+		o.hyd_offset = c.long(v.out.hyd_offset)
+		o.out_offset1 = c.long(v.out.out_offset1)
+		o.out_offset2 = c.long(v.out.out_offset2)
+	}
+	if st := p.strs; st != nil do st.warnflag = c.int(v.warnflag)
 	p.hyd.dsystem = v.hyd.dsystem
 	p.hyd.emax = v.hyd.emax
 	p.hyd.leakage_loss = v.hyd.leakage_loss
@@ -330,6 +446,7 @@ odin_headlosscoeffs :: proc "c" (p: ^Project_C) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	headloss_coeffs(&v.net, &v.hyd)
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_matrixcoeffs")
@@ -338,6 +455,7 @@ odin_matrixcoeffs :: proc "c" (p: ^Project_C) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	matrix_coeffs(&v.net, &v.hyd, &v.m)
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_hydsolve")
@@ -345,7 +463,7 @@ odin_hydsolve :: proc "c" (p: ^Project_C, iter: ^c.int, relerr: ^f64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	it, re, rc := hydsolve(&v.net, &v.hyd, &v.m, p.hooks)
+	it, re, rc := hydsolve(&v.net, &v.hyd, &v.m, &v)
 	iter^ = c.int(it)
 	relerr^ = re
 	unview(p, &v)
@@ -360,6 +478,7 @@ odin_resistcoeff :: proc "c" (p: ^Project_C, k: c.int) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	resist_coeff(&v.net, &v.hyd, int(k))
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_pcvlosscoeff")
@@ -367,7 +486,9 @@ odin_pcvlosscoeff :: proc "c" (p: ^Project_C, k: c.int, s: f64) -> f64 {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	return pcv_loss_coeff(&v.net, int(k), s)
+	r := pcv_loss_coeff(&v.net, int(k), s)
+	unview(p, &v)
+	return r
 }
 
 @(export, link_name = "odin_initlinkflow")
@@ -376,6 +497,7 @@ odin_initlinkflow :: proc "c" (p: ^Project_C, i: c.int, s: c.int, k: f64) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	init_link_flow(&v.net, &v.hyd, int(i), Status(s), k)
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_resetpumpflow")
@@ -384,6 +506,7 @@ odin_resetpumpflow :: proc "c" (p: ^Project_C, i: c.int) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	reset_pump_flow(&v.net, &v.hyd, int(i))
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_setlinkstatus")
@@ -392,6 +515,7 @@ odin_setlinkstatus :: proc "c" (p: ^Project_C, k: c.int, value: c.int) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	set_link_status(&v.net, &v.hyd, int(k), int(value))
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_setlinksetting")
@@ -400,6 +524,7 @@ odin_setlinksetting :: proc "c" (p: ^Project_C, k: c.int, value: f64) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	set_link_setting(&v.net, &v.hyd, int(k), value)
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_checkrules")
@@ -407,7 +532,7 @@ odin_checkrules :: proc "c" (p: ^Project_C, dt: i64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	n := check_rules(&v.net, &v.hyd, p.times, p.hooks, dt)
+	n := check_rules(&v.net, &v.hyd, &v.times, &v, dt)
 	unview(p, &v)
 	return c.int(n)
 }
@@ -417,7 +542,7 @@ odin_inithyd :: proc "c" (p: ^Project_C, initflag: c.int) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	init_hyd(&v.net, &v.hyd, p.times, int(initflag))
+	init_hyd(&v.net, &v.hyd, &v.times, int(initflag))
 	unview(p, &v)
 }
 
@@ -426,7 +551,7 @@ odin_runhyd :: proc "c" (p: ^Project_C, now: ^i64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	t, rc := run_hyd(&v.net, &v.hyd, &v.m, p.times, p.hooks)
+	t, rc := run_hyd(&v.net, &v.hyd, &v.m, &v.times, &v)
 	now^ = t
 	unview(p, &v)
 	return c.int(rc)
@@ -437,7 +562,7 @@ odin_nexthyd :: proc "c" (p: ^Project_C, tstep: ^i64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	ts, rc := next_hyd(&v.net, &v.hyd, p.times, p.hooks)
+	ts, rc := next_hyd(&v.net, &v.hyd, &v.times, &v)
 	tstep^ = ts
 	unview(p, &v)
 	return c.int(rc)
@@ -448,7 +573,7 @@ odin_demands :: proc "c" (p: ^Project_C) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	demands(&v.net, &v.hyd, p.times)
+	demands(&v.net, &v.hyd, &v.times)
 	unview(p, &v)
 }
 
@@ -457,7 +582,7 @@ odin_controls :: proc "c" (p: ^Project_C) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	return c.int(controls(&v.net, &v.hyd, p.times, p.hooks))
+	return c.int(controls(&v.net, &v.hyd, &v.times, &v))
 }
 
 @(export, link_name = "odin_timestep")
@@ -465,7 +590,9 @@ odin_timestep :: proc "c" (p: ^Project_C, nrules: c.int) -> i64 {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	return timestep(&v.net, &v.hyd, p.times, p.hooks, int(nrules))
+	r := timestep(&v.net, &v.hyd, &v.times, &v, int(nrules))
+	unview(p, &v)
+	return r
 }
 
 @(export, link_name = "odin_tanklevels")
@@ -474,6 +601,7 @@ odin_tanklevels :: proc "c" (p: ^Project_C, tstep: i64) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	tank_levels(&v.net, &v.hyd, tstep)
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_tankvolume")
@@ -481,7 +609,9 @@ odin_tankvolume :: proc "c" (p: ^Project_C, i: c.int, h: f64) -> f64 {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	return tank_volume(&v.net, &v.hyd, int(i), h)
+	r := tank_volume(&v.net, &v.hyd, int(i), h)
+	unview(p, &v)
+	return r
 }
 
 @(export, link_name = "odin_tankgrade")
@@ -489,7 +619,9 @@ odin_tankgrade :: proc "c" (p: ^Project_C, i: c.int, vol: f64) -> f64 {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	return tank_grade(&v.net, &v.hyd, int(i), vol)
+	r := tank_grade(&v.net, &v.hyd, int(i), vol)
+	unview(p, &v)
+	return r
 }
 
 @(export, link_name = "odin_getenergy")
@@ -498,6 +630,7 @@ odin_getenergy :: proc "c" (p: ^Project_C, k: c.int, kw, eff: ^f64) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	kw^, eff^ = get_energy(&v.net, &v.hyd, int(k))
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_getallpumpsenergy")
@@ -506,6 +639,7 @@ odin_getallpumpsenergy :: proc "c" (p: ^Project_C) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	get_all_pumps_energy(&v.net, &v.hyd)
+	unview(p, &v)
 }
 
 @(export, link_name = "odin_addenergy")
@@ -513,7 +647,7 @@ odin_addenergy :: proc "c" (p: ^Project_C, hstep: i64) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	add_energy(&v.net, &v.hyd, p.times, hstep)
+	add_energy(&v.net, &v.hyd, &v.times, hstep)
 	unview(p, &v)
 }
 
@@ -555,7 +689,7 @@ odin_transport :: proc "c" (p: ^Project_C, dt: i64) {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	transport(&v.net, &v.hyd, p.times, &v.q, dt)
+	transport(&v.net, &v.hyd, &v.times, &v.q, dt)
 	unview(p, &v)
 }
 
@@ -573,7 +707,9 @@ odin_avgqual :: proc "c" (p: ^Project_C, k: c.int) -> f64 {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	return avg_qual(&v.net, &v.q, int(k))
+	r := avg_qual(&v.net, &v.q, int(k))
+	unview(p, &v)
+	return r
 }
 
 // odin_segments lists chain k's segments, first to last, for the shadow.
@@ -586,4 +722,299 @@ odin_segments :: proc "c" (s: ^Segments, k: c.int, v, cq: [^]f64, max: c.int) ->
 		n += 1
 	}
 	return n
+}
+
+// ── the report and the files ──────────────────────────────────────────
+
+@(export, link_name = "odin_writeline")
+odin_writeline :: proc "c" (p: ^Project_C, s: cstring) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writeline(&v, string(s))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writelogo")
+odin_writelogo :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writelogo(&v)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_clearreport")
+odin_clearreport :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := clearreport(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_writesummary")
+odin_writesummary :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writesummary(&v)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writehydstat")
+odin_writehydstat :: proc "c" (p: ^Project_C, iter: c.int, relerr: f64) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writehydstat(&v, int(iter), relerr)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writeflowbalance")
+odin_writeflowbalance :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writeflowbalance(&v)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writemassbalance")
+odin_writemassbalance :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writemassbalance(&v)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writeenergy")
+odin_writeenergy :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writeenergy(&v)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writereport")
+odin_writereport :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := writereport(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_writeheader")
+odin_writeheader :: proc "c" (p: ^Project_C, kind: c.int, contin: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writeheader(&v, Header_Kind(kind), contin != 0)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writerelerr")
+odin_writerelerr :: proc "c" (p: ^Project_C, iter: c.int, relerr: f64) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writerelerr(&v, int(iter), relerr)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writestatchange")
+odin_writestatchange :: proc "c" (p: ^Project_C, k: c.int, s1, s2: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writestatchange(&v, int(k), Status(s1), Status(s2))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writecontrolaction")
+odin_writecontrolaction :: proc "c" (p: ^Project_C, k, i: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writecontrolaction(&v, int(k), int(i))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writeruleaction")
+odin_writeruleaction :: proc "c" (p: ^Project_C, k: c.int, rule_id: cstring) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writeruleaction(&v, int(k), string(rule_id))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writehydwarn")
+odin_writehydwarn :: proc "c" (p: ^Project_C, iter: c.int, relerr: f64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := writehydwarn(&v, int(iter), relerr)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_writehyderr")
+odin_writehyderr :: proc "c" (p: ^Project_C, errnode: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writehyderr(&v, int(errnode))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_disconnected")
+odin_disconnected :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := disconnected(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_writelimits")
+odin_writelimits :: proc "c" (p: ^Project_C, j1, j2: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writelimits(&v, Field(j1), Field(j2))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_writetime")
+odin_writetime :: proc "c" (p: ^Project_C, prefix: cstring) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	writetime(&v, string(prefix))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_errmsg")
+odin_errmsg :: proc "c" (p: ^Project_C, errcode: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	errmsg(&v, int(errcode))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_savenetdata")
+odin_savenetdata :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := savenetdata(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_savehyd")
+odin_savehyd :: proc "c" (p: ^Project_C, htime: i64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := savehyd(&v, htime)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_savehydstep")
+odin_savehydstep :: proc "c" (p: ^Project_C, hydstep: i64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := savehydstep(&v, hydstep)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_saveenergy")
+odin_saveenergy :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := saveenergy(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_readhyd")
+odin_readhyd :: proc "c" (p: ^Project_C, hydtime: ^i64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	ok := readhyd(&v, hydtime)
+	unview(p, &v)
+	return c.int(ok)
+}
+
+@(export, link_name = "odin_readhydstep")
+odin_readhydstep :: proc "c" (p: ^Project_C, hydstep: ^i64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	ok := readhydstep(&v, hydstep)
+	unview(p, &v)
+	return c.int(ok)
+}
+
+@(export, link_name = "odin_saveoutput")
+odin_saveoutput :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := saveoutput(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_savefinaloutput")
+odin_savefinaloutput :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := savefinaloutput(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_openhydfile")
+odin_openhydfile :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := openhydfile(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_openoutfile")
+odin_openoutfile :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := openoutfile(&v)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_closeoutfile")
+odin_closeoutfile :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	closeoutfile(&v)
+	unview(p, &v)
 }

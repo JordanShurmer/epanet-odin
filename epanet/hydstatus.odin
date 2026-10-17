@@ -9,7 +9,7 @@ package epanet
 
 // valve_status re-evaluates every PRV and PSV that has a setting. Returns
 // whether any changed.
-valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks) -> bool {
+valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool {
 	change := false
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]
@@ -27,7 +27,7 @@ valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hoo
 			continue
 		}
 		if status != hyd.status[k] {
-			if hyd.status_report do hooks.write_statchange(hooks.ctx, k, status, hyd.status[k])
+			if hyd.status_report do writestatchange(pr, int(k), status, hyd.status[k])
 			change = true
 		}
 	}
@@ -35,7 +35,7 @@ valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hoo
 }
 
 // link_status re-evaluates check valves, pumps, FCVs and links at tanks.
-link_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks) -> bool {
+link_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool {
 	change := false
 	for k in 1 ..= net.nlinks {
 		n1, n2 := net.n1[k], net.n2[k]
@@ -59,7 +59,7 @@ link_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hook
 
 		if status != hyd.status[k] {
 			change = true
-			if hyd.status_report do hooks.write_statchange(hooks.ctx, i32(k), status, hyd.status[k])
+			if hyd.status_report do writestatchange(pr, int(k), status, hyd.status[k])
 		}
 	}
 	return change

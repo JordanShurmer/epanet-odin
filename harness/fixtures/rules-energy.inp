@@ -116,4 +116,11 @@ Rule Timestep       0:06
 Report Timestep     1:00
 Start ClockTime     6 AM
 
+[REPORT]
+PAGE      40
+STATUS    FULL
+ENERGY    YES
+NODES     ALL
+LINKS     ALL
+
 [END]

@@ -315,21 +315,3 @@ Hydraulics :: struct {
 	tank_volume:               []f64,
 	energy:                    []Pump_Energy,
 }
-
-// Hooks are what is still C's: the report writer and the hydraulics
-// file. ctx goes back with every call.
-Hooks :: struct {
-	ctx:                  rawptr,
-	write_relerr:         proc "c" (ctx: rawptr, iter: i32, relerr: f64),
-	write_statchange:     proc "c" (ctx: rawptr, link: i32, old, new: Status),
-	write_hyderr:         proc "c" (ctx: rawptr, node: i32),
-	write_hydbal:         proc "c" (ctx: rawptr, flow_change, head_error: f64, qlink, qnode, hlink: i32),
-	write_badvalve:       proc "c" (ctx: rawptr, link: i32),
-	write_control_action: proc "c" (ctx: rawptr, link, control: i32),
-	write_rule_action:    proc "c" (ctx: rawptr, link, rule: i32),
-	write_hydstat:        proc "c" (ctx: rawptr, iter: i32, relerr: f64),
-	write_hydwarn:        proc "c" (ctx: rawptr, iter: i32, relerr: f64) -> i32, // the warning code
-	write_flowbalance:    proc "c" (ctx: rawptr),
-	save_hyd:             proc "c" (ctx: rawptr) -> i32, // the step's results to the hydraulics file
-	save_hydstep:         proc "c" (ctx: rawptr, hydstep: i64) -> i32,
-}

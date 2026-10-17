@@ -118,23 +118,6 @@ typedef struct {
     int *order, *row, *ndx;
 } OdinMatrix;
 
-/* What is still C's: the status report's lines, and the rules. */
-typedef struct {
-    void *ctx;
-    void (*write_relerr)(void *, int, double);
-    void (*write_statchange)(void *, int, int, int);
-    void (*write_hyderr)(void *, int);
-    void (*write_hydbal)(void *, double, double, int, int, int);
-    void (*write_badvalve)(void *, int);
-    void (*write_control_action)(void *, int, int);
-    void (*write_rule_action)(void *, int, int);
-    void (*write_hydstat)(void *, int, double);
-    int (*write_hydwarn)(void *, int, double);
-    void (*write_flowbalance)(void *);
-    int (*save_hyd)(void *);
-    int (*save_hydstep)(void *, long long);
-} OdinHooks;
-
 /* The quality engine's settings and state; segs is its own segment store. */
 typedef struct {
     int kind, trace_node, reactive, out_of_memory;
@@ -149,13 +132,55 @@ typedef struct {
     void *segs;
 } OdinQuality;
 
+/* EPANET's Report struct, its Field table as one array per field. */
+typedef struct {
+    FILE *file;
+    int rptflag, fprinterr;
+    int page_size, page_num, line_num;
+    int nperiods;
+    int summary, messages, status;
+    int energy, nodes, links, tstat;
+    int *field_enabled, *field_precision;
+    double *field_lo, *field_hi;
+    const char **field_name, **field_units;
+    const char *rpt1_fname, *rpt2_fname;
+    void (*callback)(void *, void *, const char *);
+    void *callback_user;
+} OdinReport;
+
+/* EPANET's Outfile struct. */
+typedef struct {
+    FILE *out_file, *hyd_file, *tmp_out_file;
+    int outflag, hydflag;
+    int save_hflag, save_qflag, saveflag;
+    long hyd_offset, out_offset1, out_offset2;
+    const char *hyd_fname, *out_fname;
+    const char *tmp_hyd_fname, *tmp_out_fname, *tmp_stat_fname;
+} OdinOutfile;
+
+/* The names and flags the report reads from the project. */
+typedef struct {
+    const char **node_id, **link_id, **rule_label;
+    int *node_rpt, *link_rpt;
+    const char *title[3];
+    const char *inp_fname, *map_fname;
+    const char *chem_name, *chem_units;
+    int units, flow_units, pressure_units;
+    double *ucf;
+    double dcost;
+    int warnflag;
+    double *pump_qmax;
+} OdinStrings;
+
 typedef struct {
     OdinNetwork *net;
     OdinHydraulics *hyd;
     OdinMatrix *m;
     Times *times; /* EPANET's own; Odin's Times matches its layout */
-    OdinHooks *hooks;
     OdinQuality *qual;
+    OdinReport *rpt;
+    OdinOutfile *out;
+    OdinStrings *strs;
 } OdinProject;
 
 
@@ -194,6 +219,37 @@ void odin_transport(OdinProject *, long long dt);
 void odin_evalmassbalance(OdinProject *);
 double odin_avgqual(OdinProject *, int k);
 int odin_segments(void *segs, int k, double *v, double *c, int max);
+void odin_writeline(OdinProject *, const char *);
+void odin_writelogo(OdinProject *);
+int odin_clearreport(OdinProject *);
+void odin_writesummary(OdinProject *);
+void odin_writehydstat(OdinProject *, int iter, double relerr);
+void odin_writeflowbalance(OdinProject *);
+void odin_writemassbalance(OdinProject *);
+void odin_writeenergy(OdinProject *);
+int odin_writereport(OdinProject *);
+void odin_writeheader(OdinProject *, int kind, int contin);
+void odin_writerelerr(OdinProject *, int iter, double relerr);
+void odin_writestatchange(OdinProject *, int k, int s1, int s2);
+void odin_writecontrolaction(OdinProject *, int k, int i);
+void odin_writeruleaction(OdinProject *, int k, const char *rule_id);
+int odin_writehydwarn(OdinProject *, int iter, double relerr);
+void odin_writehyderr(OdinProject *, int errnode);
+int odin_disconnected(OdinProject *);
+void odin_writelimits(OdinProject *, int j1, int j2);
+void odin_writetime(OdinProject *, const char *prefix);
+void odin_errmsg(OdinProject *, int errcode);
+int odin_savenetdata(OdinProject *);
+int odin_savehyd(OdinProject *, long long htime);
+int odin_savehydstep(OdinProject *, long long hydstep);
+int odin_saveenergy(OdinProject *);
+int odin_readhyd(OdinProject *, long long *hydtime);
+int odin_readhydstep(OdinProject *, long long *hydstep);
+int odin_saveoutput(OdinProject *);
+int odin_savefinaloutput(OdinProject *);
+int odin_openhydfile(OdinProject *);
+int odin_openoutfile(OdinProject *);
+void odin_closeoutfile(OdinProject *);
 
 /* The originals, renamed at link time. */
 int linsolve_c(Smatrix *sm, int n);
@@ -231,13 +287,22 @@ double avgqual_c(Project *pr, int k);
 static OdinNetwork mir;
 static OdinHydraulics hydv;
 static OdinMatrix matv;
-static OdinHooks hooks;
 static OdinQuality qualv;
-static OdinProject proj = {&mir, &hydv, &matv, NULL, &hooks, &qualv};
-static int mir_nodes, mir_links, mir_tanks, mir_pumps, mir_valves, mir_controls,
-           mir_curves, mir_demands, mir_adj, mir_premises, mir_actions,
-           mir_rules = -1, /* -1: the end-of-table entry exists with no rules */
-           mir_patterns = -1; /* -1: pattern 0 always exists */
+static OdinReport rptv;
+static OdinOutfile outv;
+static OdinStrings strv;
+static OdinProject proj = {&mir, &hydv, &matv, NULL, &qualv, &rptv, &outv, &strv};
+static int field_enabled[MAXVAR], field_precision[MAXVAR];
+static double field_lo[MAXVAR], field_hi[MAXVAR];
+static const char *field_name[MAXVAR], *field_units[MAXVAR];
+static const char **node_id, **link_id, **rule_label;
+static int *node_rpt, *link_rpt;
+static double *pump_qmax;
+/* -1: every table exists, with its slot 0 and its end-of-table entry, before
+ * the network has anything in it (the logo is written at open). */
+static int mir_nodes = -1, mir_links = -1, mir_tanks = -1, mir_pumps = -1, mir_valves = -1,
+           mir_controls = -1, mir_curves = -1, mir_demands, mir_adj, mir_premises, mir_actions,
+           mir_rules = -1, mir_patterns = -1;
 static double *leak_cfa, *leak_cva, *leak_qfa, *leak_qva, *tank_volume;
 static Senergy *energy;
 static double *source_mass, *tank_c, *link_rc;
@@ -247,8 +312,6 @@ static void *grow(void *p, int n, size_t size)
 {
     return realloc(p, (size_t)(n + 1) * size);
 }
-
-static void hooks_init(Project *pr);
 
 /* enter — refresh the mirror from the project. Called on every way in. */
 static OdinProject *enter(Project *pr)
@@ -276,9 +339,13 @@ static OdinProject *enter(Project *pr)
         leak_qfa = grow(leak_qfa, mir_nodes, sizeof(double));
         leak_qva = grow(leak_qva, mir_nodes, sizeof(double));
         m->demand_first = grow(m->demand_first, mir_nodes + 1, sizeof(int));
+        node_id = grow(node_id, mir_nodes, sizeof(const char *));
+        node_rpt = grow(node_rpt, mir_nodes, sizeof(int));
     }
     if (net->Nlinks > mir_links) {
         mir_links = net->Nlinks;
+        link_id = grow(link_id, mir_links, sizeof(const char *));
+        link_rpt = grow(link_rpt, mir_links, sizeof(int));
         m->link_type = grow(m->link_type, mir_links, sizeof(int));
         m->n1 = grow(m->n1, mir_links, sizeof(int));
         m->n2 = grow(m->n2, mir_links, sizeof(int));
@@ -316,6 +383,7 @@ static OdinProject *enter(Project *pr)
     }
     if (net->Npumps > mir_pumps) {
         mir_pumps = net->Npumps;
+        pump_qmax = grow(pump_qmax, mir_pumps, sizeof(double));
         m->pump_link = grow(m->pump_link, mir_pumps, sizeof(int));
         m->pump_type = grow(m->pump_type, mir_pumps, sizeof(int));
         m->pump_hcurve = grow(m->pump_hcurve, mir_pumps, sizeof(int));
@@ -515,8 +583,8 @@ static OdinProject *enter(Project *pr)
     }
     /* Pattern 0 is EPANET's one-multiplier dummy for demands without one. */
     for (i = 0; i <= net->Npats; i++) {
-        m->pattern_len[i] = net->Pattern[i].Length;
-        m->pattern_f[i] = net->Pattern[i].F;
+        m->pattern_len[i] = net->Pattern ? net->Pattern[i].Length : 0;
+        m->pattern_f[i] = net->Pattern ? net->Pattern[i].F : NULL;
     }
     m->ucf_flow = pr->Ucf[FLOW];
     m->ucf_head = pr->Ucf[HEAD];
@@ -544,6 +612,7 @@ static OdinProject *enter(Project *pr)
             m->rule_premise_first = grow(m->rule_premise_first, mir_rules + 1, sizeof(int));
             m->rule_then_first = grow(m->rule_then_first, mir_rules + 1, sizeof(int));
             m->rule_else_first = grow(m->rule_else_first, mir_rules, sizeof(int));
+            rule_label = grow(rule_label, mir_rules, sizeof(const char *));
         }
         if (np > mir_premises) {
             mir_premises = np;
@@ -568,6 +637,7 @@ static OdinProject *enter(Project *pr)
         for (r = 1; r <= net->Nrules; r++) {
             Srule *rule = &net->Rule[r];
             m->rule_priority[r] = rule->priority;
+            rule_label[r] = rule->label;
             m->rule_enabled[r] = rule->isEnabled;
             m->rule_premise_first[r] = np;
             for (pm = rule->Premises; pm; pm = pm->next, np++) {
@@ -710,7 +780,89 @@ static OdinProject *enter(Project *pr)
     matv.ndx = sm->Ndx;
     proj.m = sm->Aii ? &matv : NULL;
     proj.times = &pr->times;
-    hooks_init(pr);
+
+    /* The report, the files and the names. */
+    {
+        Report *rpt = &pr->report;
+        Outfile *out = &pr->outfile;
+        rptv.file = rpt->RptFile;
+        rptv.rptflag = rpt->Rptflag;
+        rptv.fprinterr = rpt->Fprinterr;
+        rptv.page_size = rpt->PageSize;
+        rptv.page_num = (int)rpt->PageNum;
+        rptv.line_num = (int)rpt->LineNum;
+        rptv.nperiods = rpt->Nperiods;
+        rptv.summary = rpt->Summaryflag;
+        rptv.messages = rpt->Messageflag;
+        rptv.status = rpt->Statflag;
+        rptv.energy = rpt->Energyflag;
+        rptv.nodes = rpt->Nodeflag;
+        rptv.links = rpt->Linkflag;
+        rptv.tstat = rpt->Tstatflag;
+        for (i = 0; i < MAXVAR; i++) {
+            field_enabled[i] = rpt->Field[i].Enabled;
+            field_precision[i] = rpt->Field[i].Precision;
+            field_lo[i] = rpt->Field[i].RptLim[LOW];
+            field_hi[i] = rpt->Field[i].RptLim[HI];
+            field_name[i] = rpt->Field[i].Name;
+            field_units[i] = rpt->Field[i].Units;
+        }
+        rptv.field_enabled = field_enabled;
+        rptv.field_precision = field_precision;
+        rptv.field_lo = field_lo;
+        rptv.field_hi = field_hi;
+        rptv.field_name = field_name;
+        rptv.field_units = field_units;
+        rptv.rpt1_fname = rpt->Rpt1Fname;
+        rptv.rpt2_fname = rpt->Rpt2Fname;
+        rptv.callback = rpt->reportCallback;
+        rptv.callback_user = rpt->reportCallbackUserData;
+
+        outv.out_file = out->OutFile;
+        outv.hyd_file = out->HydFile;
+        outv.tmp_out_file = out->TmpOutFile;
+        outv.outflag = out->Outflag;
+        outv.hydflag = out->Hydflag;
+        outv.save_hflag = out->SaveHflag;
+        outv.save_qflag = out->SaveQflag;
+        outv.saveflag = out->Saveflag;
+        outv.hyd_offset = out->HydOffset;
+        outv.out_offset1 = out->OutOffset1;
+        outv.out_offset2 = out->OutOffset2;
+        outv.hyd_fname = out->HydFname;
+        outv.out_fname = out->OutFname;
+        outv.tmp_hyd_fname = pr->TmpHydFname;
+        outv.tmp_out_fname = pr->TmpOutFname;
+        outv.tmp_stat_fname = pr->TmpStatFname;
+
+        for (i = 1; i <= net->Nnodes; i++) {
+            node_id[i] = net->Node[i].ID;
+            node_rpt[i] = net->Node[i].Rpt;
+        }
+        for (i = 1; i <= net->Nlinks; i++) {
+            link_id[i] = net->Link[i].ID;
+            link_rpt[i] = net->Link[i].Rpt;
+        }
+        for (i = 1; i <= net->Npumps; i++) pump_qmax[i] = net->Pump[i].Qmax;
+        node_id[0] = link_id[0] = rule_label[0] = "";
+        strv.node_id = node_id;
+        strv.link_id = link_id;
+        strv.rule_label = rule_label;
+        strv.node_rpt = node_rpt;
+        strv.link_rpt = link_rpt;
+        for (i = 0; i < 3; i++) strv.title[i] = pr->Title[i];
+        strv.inp_fname = pr->parser.InpFname;
+        strv.map_fname = pr->MapFname;
+        strv.chem_name = pr->quality.ChemName;
+        strv.chem_units = pr->quality.ChemUnits;
+        strv.units = pr->parser.Unitsflag;
+        strv.flow_units = pr->parser.Flowflag;
+        strv.pressure_units = pr->parser.Pressflag;
+        strv.ucf = pr->Ucf;
+        strv.dcost = hyd->Dcost;
+        strv.warnflag = pr->Warnflag;
+        strv.pump_qmax = pump_qmax;
+    }
     return &proj;
 }
 
@@ -733,6 +885,20 @@ static void leave(Project *pr)
         hyd->Leakage[i].qfa = leak_qfa[i];
         hyd->Leakage[i].qva = leak_qva[i];
     }
+    pr->report.RptFile = rptv.file;
+    pr->report.Rptflag = rptv.rptflag;
+    pr->report.Fprinterr = rptv.fprinterr;
+    pr->report.PageNum = rptv.page_num;
+    pr->report.LineNum = rptv.line_num;
+    pr->report.Nperiods = rptv.nperiods;
+    pr->outfile.OutFile = outv.out_file;
+    pr->outfile.HydFile = outv.hyd_file;
+    pr->outfile.TmpOutFile = outv.tmp_out_file;
+    pr->outfile.SaveHflag = outv.save_hflag;
+    pr->outfile.HydOffset = outv.hyd_offset;
+    pr->outfile.OutOffset1 = outv.out_offset1;
+    pr->outfile.OutOffset2 = outv.out_offset2;
+    pr->Warnflag = strv.warnflag;
     hyd->Dsystem = hydv.dsystem;
     hyd->Emax = hydv.emax;
     hyd->LeakageLoss = hydv.leakage_loss;
@@ -769,77 +935,137 @@ static void leave(Project *pr)
     }
 }
 
-/* ── the hooks: each one is the EPANET function of the same purpose ─── */
+/* ── the report and the files: Odin's in both builds (nothing to shadow:
+ * their result is the file). report.c's static helpers (writeenergy,
+ * disconnected, writelimits) are reached only through these. ───────── */
 
-static void hook_relerr(void *ctx, int iter, double relerr) { writerelerr(ctx, iter, relerr); }
-static void hook_statchange(void *ctx, int k, int s0, int s1) { writestatchange(ctx, k, s0, s1); }
-static void hook_hyderr(void *ctx, int n) { writehyderr(ctx, n); }
-static void hook_control_action(void *ctx, int k, int i) { writecontrolaction(ctx, k, i); }
-static void hook_badvalve(void *ctx, int k)
+void writeline(Project *pr, const char *s) { odin_writeline(enter(pr), s); leave(pr); }
+void writelogo(Project *pr) { odin_writelogo(enter(pr)); leave(pr); }
+int clearreport(Project *pr)
 {
-    Project *pr = ctx;
-    sprintf(pr->Msg, FMT61, clocktime(pr->report.Atime, pr->times.Htime), pr->network.Link[k].ID);
-    writeline(pr, pr->Msg);
-}
-static void hook_hydbal(void *ctx, double qchange, double herror, int qlink, int qnode, int hlink)
-{
-    Project *pr = ctx;
-    if (qlink >= 1) {
-        sprintf(pr->Msg, FMT66, qchange, pr->network.Link[qlink].ID);
-        writeline(pr, pr->Msg);
-    } else if (qnode >= 1) {
-        sprintf(pr->Msg, FMT67, qchange, pr->network.Node[qnode].ID);
-        writeline(pr, pr->Msg);
-    }
-    if (hlink >= 1) {
-        sprintf(pr->Msg, FMT68, herror, pr->network.Link[hlink].ID);
-        writeline(pr, pr->Msg);
-    }
-}
-static void hook_rule_action(void *ctx, int k, int r)
-{
-    Project *pr = ctx;
-    writeruleaction(pr, k, pr->network.Rule[r].label);
-}
-static void hook_hydstat(void *ctx, int iter, double relerr) { writehydstat(ctx, iter, relerr); }
-static int hook_hydwarn(void *ctx, int iter, double relerr) { return writehydwarn(ctx, iter, relerr); }
-static void hook_flowbalance(void *ctx) { writeflowbalance(ctx); }
-/* The file writers read the project: the mirror goes out first. */
-static int hook_save_hyd(void *ctx)
-{
-    Project *pr = ctx;
-    int rc;
+    int rc = odin_clearreport(enter(pr));
     leave(pr);
-    rc = savehyd(pr, &pr->times.Htime);
-    enter(pr);
     return rc;
 }
-static int hook_save_hydstep(void *ctx, long long hydstep)
+void writesummary(Project *pr) { odin_writesummary(enter(pr)); leave(pr); }
+void writehydstat(Project *pr, int iter, double relerr) { odin_writehydstat(enter(pr), iter, relerr); leave(pr); }
+void writeflowbalance(Project *pr) { odin_writeflowbalance(enter(pr)); leave(pr); }
+void writemassbalance(Project *pr) { odin_writemassbalance(enter(pr)); leave(pr); }
+int writereport(Project *pr)
 {
-    Project *pr = ctx;
-    long hs = (long)hydstep;
-    int rc;
+    int rc = odin_writereport(enter(pr));
     leave(pr);
-    rc = savehydstep(pr, &hs);
-    enter(pr);
     return rc;
 }
-
-static void hooks_init(Project *pr)
+void writeheader(Project *pr, int type, int contin) { odin_writeheader(enter(pr), type, contin); leave(pr); }
+void writerelerr(Project *pr, int iter, double relerr) { odin_writerelerr(enter(pr), iter, relerr); leave(pr); }
+void writestatchange(Project *pr, int k, char s1, char s2) { odin_writestatchange(enter(pr), k, s1, s2); leave(pr); }
+void writecontrolaction(Project *pr, int k, int i) { odin_writecontrolaction(enter(pr), k, i); leave(pr); }
+void writeruleaction(Project *pr, int k, char *ruleID) { odin_writeruleaction(enter(pr), k, ruleID); leave(pr); }
+int writehydwarn(Project *pr, int iter, double relerr)
 {
-    hooks.ctx = pr;
-    hooks.write_relerr = hook_relerr;
-    hooks.write_statchange = hook_statchange;
-    hooks.write_hyderr = hook_hyderr;
-    hooks.write_hydbal = hook_hydbal;
-    hooks.write_badvalve = hook_badvalve;
-    hooks.write_control_action = hook_control_action;
-    hooks.write_rule_action = hook_rule_action;
-    hooks.write_hydstat = hook_hydstat;
-    hooks.write_hydwarn = hook_hydwarn;
-    hooks.write_flowbalance = hook_flowbalance;
-    hooks.save_hyd = hook_save_hyd;
-    hooks.save_hydstep = hook_save_hydstep;
+    int rc = odin_writehydwarn(enter(pr), iter, relerr);
+    leave(pr);
+    return rc;
+}
+void writehyderr(Project *pr, int errnode) { odin_writehyderr(enter(pr), errnode); leave(pr); }
+/* EPANET's writetime takes "Analysis begun %s"; the Odin one takes the
+ * words before the date. */
+void writetime(Project *pr, char *fmt)
+{
+    char prefix[MAXMSG + 1];
+    char *pct = strchr(fmt, '%');
+    size_t n = pct ? (size_t)(pct - fmt) : strlen(fmt);
+    if (n > MAXMSG) n = MAXMSG;
+    memcpy(prefix, fmt, n);
+    prefix[n] = '\0';
+    odin_writetime(enter(pr), prefix);
+    leave(pr);
+}
+void errmsg(Project *pr, int errcode) { odin_errmsg(enter(pr), errcode); leave(pr); }
+int savenetdata(Project *pr)
+{
+    int rc = odin_savenetdata(enter(pr));
+    leave(pr);
+    return rc;
+}
+int savehyd(Project *pr, long *htime)
+{
+    int rc = odin_savehyd(enter(pr), *htime);
+    leave(pr);
+    return rc;
+}
+int savehydstep(Project *pr, long *hydstep)
+{
+    int rc = odin_savehydstep(enter(pr), *hydstep);
+    leave(pr);
+    return rc;
+}
+int saveenergy(Project *pr)
+{
+    int rc = odin_saveenergy(enter(pr));
+    leave(pr);
+    return rc;
+}
+int readhyd(Project *pr, long *hydtime)
+{
+    long long t = 0;
+    int rc = odin_readhyd(enter(pr), &t);
+    leave(pr);
+    *hydtime = (long)t;
+    return rc;
+}
+int readhydstep(Project *pr, long *hydstep)
+{
+    long long t = 0;
+    int rc = odin_readhydstep(enter(pr), &t);
+    leave(pr);
+    *hydstep = (long)t;
+    return rc;
+}
+int saveoutput(Project *pr)
+{
+    int rc = odin_saveoutput(enter(pr));
+    leave(pr);
+    return rc;
+}
+int savefinaloutput(Project *pr)
+{
+    int rc = odin_savefinaloutput(enter(pr));
+    leave(pr);
+    return rc;
+}
+int openhydfile(Project *pr)
+{
+    int rc = odin_openhydfile(enter(pr));
+    leave(pr);
+    return rc;
+}
+int openoutfile(Project *pr)
+{
+    int rc = odin_openoutfile(enter(pr));
+    leave(pr);
+    return rc;
+}
+void closeoutfile(Project *pr) { odin_closeoutfile(enter(pr)); leave(pr); }
+/* EPANET frees the network before it closes the files, leaving its counts
+ * and pointers behind; the mirror must not read them. */
+void freedata_c(Project *pr);
+void freedata(Project *pr)
+{
+    Network *net = &pr->network;
+    freedata_c(pr);
+    net->Nnodes = net->Njuncs = net->Nlinks = net->Ntanks = net->Npumps = net->Nvalves = 0;
+    net->Ncontrols = net->Nrules = net->Ncurves = net->Npats = 0;
+    net->Node = NULL;
+    net->Link = NULL;
+    net->Tank = NULL;
+    net->Pump = NULL;
+    net->Valve = NULL;
+    net->Control = NULL;
+    net->Pattern = NULL;
+    net->Curve = NULL;
+    net->Rule = NULL;
 }
 
 /* ── the Odin-backed versions ────────────────────────────────────────── */

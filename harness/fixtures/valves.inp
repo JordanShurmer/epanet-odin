@@ -93,4 +93,18 @@ Duration            24:00
 Hydraulic Timestep  1:00
 Pattern Timestep    1:00
 
+[REPORT]
+; every table, with page breaks
+PAGE      50
+STATUS    FULL
+SUMMARY   YES
+ENERGY    YES
+NODES     ALL
+LINKS     ALL
+LENGTH    YES
+DIAMETER  YES
+STATE     YES
+SETTING   YES
+F-FACTOR  YES
+
 [END]

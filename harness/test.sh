@@ -5,6 +5,7 @@
 #   harness/test.sh -v         name every check
 #   harness/test.sh -vv        + compiler, objcopy and shadow output
 #   SWAP="linsolve" harness/test.sh        the symbols to take from Odin
+#   SWAP_FILES="" harness/test.sh          ...and the report and file writers
 #   ODIN=/opt/odin/odin harness/test.sh    where the compiler is (default: PATH)
 #   EPANET=../EPANET harness/test.sh       an EPANET checkout to build from
 #                                          (default: ./EPANET, cloned on demand)
@@ -33,6 +34,8 @@ done
 
 ODIN=${ODIN:-odin}
 SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve resistcoeff pcvlosscoeff initlinkflow resetpumpflow setlinkstatus setlinksetting demands controls timestep tanklevels tankvolume tankgrade getenergy getallpumpsenergy addenergy initqual runqual nextqual stepqual avgqual checkrules inithyd runhyd nexthyd"}
+# The report and the files: swapped, not shadowed (their result is the file).
+SWAP_FILES=${SWAP_FILES:-"writeline writelogo clearreport writesummary writehydstat writeflowbalance writemassbalance writereport writeheader writerelerr writestatchange writecontrolaction writeruleaction writehydwarn writehyderr writetime errmsg savenetdata savehyd savehydstep saveenergy readhyd readhydstep saveoutput savefinaloutput openhydfile openoutfile closeoutfile freedata"}
 TOL=${TOL:-1e-9}
 EP=${EPANET:-EPANET}
 EPANET_COMMIT=444725fbf16ab28b0470ef0ed281dc4849d49583   # OWA EPANET 2.3 dev
@@ -105,9 +108,9 @@ cp "$B"/c/*.o "$B/odin/"
 # (EPANET is compiled with -fsemantic-interposition so that such calls are
 # real calls, not inlined bodies).
 renames=""; keeps=""
-for sym in $SWAP; do renames="$renames --redefine-sym $sym=${sym}_c"; keeps="$keeps -G ${sym}_c"; done
+for sym in $SWAP $SWAP_FILES; do renames="$renames --redefine-sym $sym=${sym}_c"; keeps="$keeps -G ${sym}_c"; done
 for obj in "$B"/odin/*.o; do
-    defined=$(nm "$obj" | awk -v syms=" $SWAP " '$2=="T" && index(syms, " "$3" ") {print $3}')
+    defined=$(nm "$obj" | awk -v syms=" $SWAP $SWAP_FILES " '$2=="T" && index(syms, " "$3" ") {print $3}')
     [ -n "$defined" ] || continue
     weakens=""
     for sym in $defined; do weakens="$weakens --weaken-symbol=$sym"; done
@@ -115,7 +118,7 @@ for obj in "$B"/odin/*.o; do
     run objcopy $renames $keeps "$obj" "${obj%.o}_c.o" || bad "swap $(basename "$obj")"
     run objcopy $weakens "$obj" || bad "weaken $(basename "$obj")"
 done
-for sym in $SWAP; do
+for sym in $SWAP $SWAP_FILES; do
     nm "$B"/odin/*_c.o | grep " T ${sym}_c\$" >/dev/null || bad "swap $sym" "no object defines $sym"
 done
 
@@ -158,9 +161,9 @@ same() {
 check() {
     inp=$1; mode=$2
     fx=$(basename "$inp" .inp)${mode:+.$mode}
-    "$B/run-c" "$inp" $mode >"$B/$fx.c.txt" 2>"$B/$fx.c.err"
+    "$B/run-c" "$inp" "${mode:--}" "$B/$fx.c" >"$B/$fx.c.txt" 2>"$B/$fx.c.err"
     rc_c=$?
-    "$B/run-odin" "$inp" $mode >"$B/$fx.odin.txt" 2>"$B/$fx.odin.err"
+    "$B/run-odin" "$inp" "${mode:--}" "$B/$fx.odin" >"$B/$fx.odin.txt" 2>"$B/$fx.odin.err"
     rc_o=$?
     if [ $rc_c -ne 0 ]; then
         skip "$fx (EPANET itself fails: $(grep -m1 'EPANET error' "$B/$fx.c.err"))"
@@ -177,7 +180,25 @@ check() {
         bad "$fx results" "$diff" "diff $B/$fx.c.txt $B/$fx.odin.txt"
     fi
 
-    "$B/run-shadow" "$inp" $mode >/dev/null 2>"$B/$fx.shadow.err"
+    # The three files: the report less its dates, the output file and the
+    # hydraulics file, byte for byte.
+    if [ $rc_c -eq 0 ]; then
+        undated() { sed -e '1s/^\(  Page 1 *\).*$/\1DATE/' -e 's/^\(  Analysis \(begun\|ended\) \).*$/\1DATE/' "$1"; }
+        if diff=$(diff <(undated "$B/$fx.c.rpt") <(undated "$B/$fx.odin.rpt")); then
+            ok "$fx report identical ($(wc -l <"$B/$fx.c.rpt") lines)"
+        else
+            bad "$fx report" "$(echo "$diff" | head -5)" "diff $B/$fx.c.rpt $B/$fx.odin.rpt"
+        fi
+        for ext in out hyd; do
+            if cmp -s "$B/$fx.c.$ext" "$B/$fx.odin.$ext"; then
+                ok "$fx .$ext identical ($(wc -c <"$B/$fx.c.$ext") bytes)"
+            else
+                bad "$fx .$ext" "$(cmp "$B/$fx.c.$ext" "$B/$fx.odin.$ext" 2>&1 | head -1)"
+            fi
+        done
+    fi
+
+    "$B/run-shadow" "$inp" "${mode:--}" >/dev/null 2>"$B/$fx.shadow.err"
     [ "$DEBUG" -ge 2 ] && sed 's/^/    /' "$B/$fx.shadow.err" >&2
     for sym in $SWAP; do
         line=$(grep "^shadow $sym: [0-9]* calls" "$B/$fx.shadow.err")

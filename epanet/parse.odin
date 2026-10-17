@@ -14,6 +14,7 @@ import "core:os"
 import "core:strings"
 
 MAXID :: 31
+MAXFNAME :: 259
 MAXLINE :: 1024
 MAXTOKS :: 40
 TITLELEN :: 79
@@ -310,7 +311,7 @@ set_defaults :: proc(p: ^Project) {
 	p.units = .US
 	p.flow_units = .GPM
 	p.pressure_units = .DEFAULTUNIT
-	p.hyd_file = .SCRATCH
+	p.out.hydflag = .SCRATCH
 	p.rpt.tstat = .SERIES
 	hyd.formflag = .HW
 	hyd.htol = 0.0005
@@ -374,6 +375,7 @@ init_report :: proc(p: ^Project) {
 	for f in Field {
 		r.fields[f] = {enabled = false, precision = 2, lo = BIG * BIG, hi = -BIG * BIG}
 	}
+	for f, i in FIELD_NAMES do r.fields[Field(i)].name = f
 	r.fields[.FRICTION].precision = 3
 	for f in Field.DEMAND ..= Field.QUALITY do r.fields[f].enabled = true
 	for f in Field.FLOW ..= Field.HEADLOSS do r.fields[f].enabled = true
