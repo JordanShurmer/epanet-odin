@@ -222,9 +222,14 @@ Ported, bit-exact on every fixture:
 
 Next, in order:
 
-11. **The editing toolkit** — `EN_set*`, `EN_add*`, `EN_delete*`,
+11. **The Odin API** — designed in [`API.md`](API.md): a `Spec` (the
+    network as written, fat structs, the user's units), `build` to a
+    `Project`, `simulate` to `Results` as tables, `run_step` and a `Frame`
+    for a loop, a few knobs for the loop cases, `write_inp`. The toolkit
+    stays beside it for C programs.
+12. **The editing toolkit** — `EN_set*`, `EN_add*`, `EN_delete*`,
     `EN_saveinpfile` (`inpfile.c`): a project built and changed through
-    the API, not only read from a file.
+    the C API, not only read from a file.
 
 ## Living inside bywater-mill
 
