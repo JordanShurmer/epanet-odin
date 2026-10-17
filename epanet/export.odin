@@ -2,7 +2,7 @@ package epanet
 
 // export.odin — the C face of the package. Each proc here is one EPANET
 // symbol, with EPANET's own argument shapes, that the bridge
-// (../bridge/bridge.c) hands straight through. Nothing else in the package
+// (../harness/bridge.c) hands straight through. Nothing else in the package
 // knows about C.
 
 import "base:runtime"

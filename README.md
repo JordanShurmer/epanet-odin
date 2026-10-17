@@ -1,19 +1,23 @@
-# epanet/odin — EPANET, rewritten in Odin, one solver at a time
+# epanet-odin — EPANET, rewritten in Odin, one solver at a time
 
-The water engine is being rewritten in Odin, data-oriented, from the core
+[OWA EPANET](https://github.com/OpenWaterAnalytics/EPANET), the water
+distribution network engine, rewritten in Odin, data-oriented, from the core
 solvers outward. Every piece is proved against the C original before the
 next one starts, by plugging it into the real EPANET and running both.
 
 ```sh
-epanet/odin/test.sh            # build c / odin / shadow, run every fixture
-epanet/odin/test.sh -v         # name every check
-make epanet-odin               # the same
+harness/test.sh            # build c / odin / shadow, run every fixture
+harness/test.sh -v         # name every check
 ```
+
+The first run clones EPANET at the pinned commit into `EPANET/` (or point
+`EPANET=` at a checkout). Needs an Odin compiler (`ODIN=` if not on PATH),
+clang, binutils.
 
 ## Layout
 
 ```
-src/            the Odin package `epanet` — the rewrite
+epanet/         the Odin package `epanet` — the rewrite
   smatrix.odin    numeric Cholesky: linsolve
   sparse.odin     symbolic factorization: createsparse
   genmmd.odin     minimum-degree ordering
@@ -23,20 +27,22 @@ src/            the Odin package `epanet` — the rewrite
   hydsolve.odin   the Newton loop
   leakage.odin    pipe leaks as node demand, per trial
   export.odin     the C face: one exported proc per swapped EPANET symbol
-fixtures/       small networks that reach the branches the real ones do not
-bridge/
+harness/        the plug-in validation
+  test.sh         builds the three binaries from EPANET's sources and compares
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
   run.c           driver: every node and link value, every time step, %.17g
-test.sh         builds the three binaries from epanet/EPANET and compares
+  fixtures/       small networks that reach the branches the real ones do not
+  out.sh          the ✓/✗ output vocabulary the script speaks
+EPANET/         OWA EPANET, cloned on demand (gitignored)
 build/          scratch (gitignored)
 ```
 
 ## How a piece is plugged in
 
-EPANET's source is never edited. `test.sh` compiles `epanet/EPANET/src` to
+EPANET's source is never edited. `harness/test.sh` compiles `EPANET/src` to
 objects, then for each symbol in `SWAP` renames the C definition in its own
 object (`objcopy --redefine-sym linsolve=linsolve_c`). The callers keep asking
-for `linsolve`, and `bridge/bridge.c` supplies it: a function with EPANET's
+for `linsolve`, and `harness/bridge.c` supplies it: a function with EPANET's
 signature that hands the arrays to the Odin package. Three binaries of the
 same driver come out:
 
@@ -55,20 +61,19 @@ a port that drifts on the ten-thousandth call of a 24-hour run is caught at
 that call, with the index and both values, not as a smeared difference in
 the final heads.
 
-To port the next piece: write it in `src/`, export it from `export.odin`,
+To port the next piece: write it in `epanet/`, export it from `export.odin`,
 add the C-signature function to `bridge.c` (both plain and `SHADOW`
 flavours), and add the symbol to `SWAP`'s default in `test.sh`.
 
 ## Fixtures
 
-EPANET's `example-networks/*.inp` and `tests/data/*.inp`, this repo's
-`utilities/*/data/*.inp` and `smoketest/testdata/model.inp`, a generated
-40×40 grid with parallel pipes, and `fixtures/`: `valves.inp` (every valve
+EPANET's `example-networks/*.inp` and `tests/data/*.inp`, a generated 40×40
+grid with parallel pipes, and `harness/fixtures/`: `valves.inp` (every valve
 type on its own branch, a check valve, a constant-horsepower pump, controls),
 `dw-emitters.inp` (Darcy-Weisbach through laminar, transitional and
 turbulent flow, emitters, pressure-driven demand, a pump speed pattern) and
-`cm-leakage.inp` (Chezy-Manning, leaking pipes, emitter backflow). Override
-with `FIXTURES="…"`.
+`cm-leakage.inp` (Chezy-Manning, leaking pipes, emitter backflow). Add your
+own networks with `EXTRA_FIXTURES="…"`, or run only some with `FIXTURES="…"`.
 
 ## Roadmap — core out
 
@@ -103,8 +108,23 @@ Next, in order:
    coefficients; `resistcoeff` and the PCV loss curve.
 6. **Water quality** — `quality.c`, `qualroute.c`, `qualreact.c`.
 7. **The outside** — `.inp` parsing, reporting, the toolkit API; at that
-   point `epanet/epanet.go` links the Odin library instead of
-   `libepanet2.a`.
+   point a program links the Odin library instead of `libepanet2.a`.
+
+## Living inside bywater-mill
+
+This directory is laid out as its own repository. To give it one:
+
+```sh
+git subtree split --prefix=epanet/odin -b epanet-odin   # in bywater-mill
+git push git@github.com:JordanShurmer/epanet-odin.git epanet-odin:main
+```
+
+then replace the directory with a submodule of it. Until then bywater-mill's
+`make epanet-odin` runs the harness here against its own EPANET checkout.
+
+## License
+
+MIT, like EPANET itself (see `LICENSE`).
 
 ## Installing Odin
 

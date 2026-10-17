@@ -1,28 +1,31 @@
 #!/usr/bin/env bash
 # test.sh — build EPANET with the Odin pieces plugged in, and prove they match.
 #
-#   epanet/odin/test.sh            one symbol per fixture × check, then the tally
-#   epanet/odin/test.sh -v         name every check
-#   epanet/odin/test.sh -vv        + compiler, objcopy and shadow output
-#   SWAP="linsolve" epanet/odin/test.sh      the symbols to take from Odin
-#   ODIN=/opt/odin/odin epanet/odin/test.sh  where the compiler is (default: PATH)
-#   FIXTURES="a.inp b.inp" epanet/odin/test.sh   just those networks
-#   ASAN=1 epanet/odin/test.sh     every binary under AddressSanitizer (both
-#                                  sides; needs libclang-rt-<ver>-dev)
+#   harness/test.sh            one symbol per fixture × check, then the tally
+#   harness/test.sh -v         name every check
+#   harness/test.sh -vv        + compiler, objcopy and shadow output
+#   SWAP="linsolve" harness/test.sh        the symbols to take from Odin
+#   ODIN=/opt/odin/odin harness/test.sh    where the compiler is (default: PATH)
+#   EPANET=../EPANET harness/test.sh       an EPANET checkout to build from
+#                                          (default: ./EPANET, cloned on demand)
+#   FIXTURES="a.inp b.inp" harness/test.sh       just those networks
+#   EXTRA_FIXTURES="c.inp" harness/test.sh       the usual set plus those
+#   ASAN=1 harness/test.sh     every binary under AddressSanitizer (both
+#                              sides; needs libclang-rt-<ver>-dev)
 #
-# Three binaries of the same driver (bridge/run.c) are built from EPANET's own
-# sources in epanet/EPANET: `c` is plain EPANET; `odin` has each symbol in SWAP
-# renamed away in its object (objcopy --redefine-sym linsolve=linsolve_c) and
-# supplied by bridge/bridge.c, which calls the Odin package; `shadow` is the
-# same with every swapped call running both and comparing. Then for every
-# fixture: c and odin must print the same results (bit-exact, else within TOL
-# relative and noted), and shadow must report no per-call mismatches.
+# Three binaries of the same driver (harness/run.c) are built from EPANET's
+# own sources: `c` is plain EPANET; `odin` has each symbol in SWAP renamed
+# away in its object (objcopy --redefine-sym linsolve=linsolve_c) and supplied
+# by harness/bridge.c, which calls the Odin package; `shadow` is the same with
+# every swapped call running both and comparing. Then for every fixture: c and
+# odin must print the same results (bit-exact, else within TOL relative and
+# noted), and shadow must report no per-call mismatches.
 #
 # ponytail: a shell loop over clang and objcopy; cmake stays out of it.
 set -uo pipefail
 
-cd "$(dirname "$0")/../.."
-. scripts/lib/out.sh
+cd "$(dirname "$0")/.."
+. harness/out.sh
 
 for a in "$@"; do
     debug_flag "$a" || usage "unknown argument: $a"
@@ -31,9 +34,9 @@ done
 ODIN=${ODIN:-odin}
 SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve"}
 TOL=${TOL:-1e-9}
-EP=epanet/EPANET
-OD=epanet/odin
-B=$OD/build
+EP=${EPANET:-EPANET}
+EPANET_COMMIT=444725fbf16ab28b0470ef0ed281dc4849d49583   # OWA EPANET 2.3 dev
+B=build
 CC=${CC:-clang}
 CFLAGS="-O2 -w -I$EP/include -I$EP/src"
 ODINFLAGS="-o:speed"
@@ -42,15 +45,20 @@ if [ -n "${ASAN:-}" ]; then
     ODINFLAGS="-o:none -debug -sanitize:address"
 fi
 
-command -v "$ODIN" >/dev/null || usage "odin compiler not found (ODIN=$ODIN); see $OD/README.md"
-[ -f $EP/src/epanet.c ] || usage "$EP is empty — git submodule update --init epanet/EPANET"
+command -v "$ODIN" >/dev/null || usage "odin compiler not found (ODIN=$ODIN); see README.md"
+if [ ! -f "$EP/src/epanet.c" ]; then
+    note "cloning OWA EPANET @ ${EPANET_COMMIT:0:7} into $EP"
+    run git clone -q https://github.com/OpenWaterAnalytics/EPANET.git "$EP" &&
+        run git -C "$EP" checkout -q "$EPANET_COMMIT" ||
+        usage "could not fetch EPANET into $EP (set EPANET= to a checkout)"
+fi
 
-# The default fixture set: EPANET's own example networks, the utilities this
-# repo serves, and fixtures/ — small networks written to reach the branches
-# those do not (every valve type, D-W and C-M, emitters, PDA, leakage).
+# The default fixture set: EPANET's own example networks and harness/fixtures
+# — small networks written to reach the branches those do not (every valve
+# type, D-W and C-M, emitters, PDA, leakage). EXTRA_FIXTURES adds to it.
 if [ -z "${FIXTURES:-}" ]; then
     FIXTURES="$(ls $EP/example-networks/*.inp $EP/tests/data/*.inp \
-        utilities/*/data/*.inp smoketest/testdata/model.inp $OD/fixtures/*.inp 2>/dev/null)"
+        harness/fixtures/*.inp 2>/dev/null) ${EXTRA_FIXTURES:-}"
 fi
 
 rm -rf "$B"
@@ -84,7 +92,7 @@ note "compiling $EP/src"
 for f in $EP/src/*.c $EP/src/util/*.c; do
     run $CC $CFLAGS -c "$f" -o "$B/c/$(basename "$f" .c).o" || bad "compile $f"
 done
-run $CC $CFLAGS -c $OD/bridge/run.c -o "$B/run.o" || bad "compile run.c"
+run $CC $CFLAGS -c harness/run.c -o "$B/run.o" || bad "compile run.c"
 
 cp "$B"/c/*.o "$B/odin/"
 # Rename each swapped symbol in the object that defines it. `nm` finds that
@@ -96,12 +104,12 @@ for sym in $SWAP; do
     run objcopy --redefine-sym "$sym=${sym}_c" "$obj" || bad "swap $sym"
 done
 
-note "odin build $OD/src"
-run "$ODIN" build $OD/src -build-mode:static -out:"$B/libepanet-odin.a" \
+note "odin build epanet"
+run "$ODIN" build epanet -build-mode:static -out:"$B/libepanet-odin.a" \
     -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build"
 
-run $CC $CFLAGS -c $OD/bridge/bridge.c -o "$B/bridge.o" || bad "compile bridge.c"
-run $CC $CFLAGS -DSHADOW -c $OD/bridge/bridge.c -o "$B/bridge-shadow.o" || bad "compile bridge.c -DSHADOW"
+run $CC $CFLAGS -c harness/bridge.c -o "$B/bridge.o" || bad "compile bridge.c"
+run $CC $CFLAGS -DSHADOW -c harness/bridge.c -o "$B/bridge-shadow.o" || bad "compile bridge.c -DSHADOW"
 
 run $CC $CFLAGS "$B/run.o" "$B"/c/*.o -lm -o "$B/run-c" || bad "link run-c"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"

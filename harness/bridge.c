@@ -29,7 +29,7 @@
 int linsolve_c(Smatrix *sm, int n);
 int createsparse_c(Project *pr);
 
-/* The ports, from the Odin package (src/export.odin). */
+/* The ports, from the Odin package (epanet/export.odin). */
 int odin_linsolve(int n, int ncoeffs, double *aii, double *aij, double *f,
                   double *temp, int *xlnz, int *nzsub, int *lnz, int *link,
                   int *first);
@@ -232,7 +232,7 @@ int createsparse(Project *pr) { return createsparse_odin(pr); }
 /* ── headlosscoeffs / matrixcoeffs ──────────────────────────────────── */
 
 /* The Odin package's view of the model: one array per field (the layout
- * of Network_C, Hydraulics_C and Matrix_C in src/export.odin). The
+ * of Network_C, Hydraulics_C and Matrix_C in epanet/export.odin). The
  * hydraulic state arrays are EPANET's own, used in place; the per-struct
  * fields of Slink, Spump, Svalve and Scurve are copied into a mirror on
  * every call, which is what a harness that must never go stale has to do. */
