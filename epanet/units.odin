@@ -134,7 +134,10 @@ adjust_data :: proc(p: ^Project) {
 	if p.pressure_units == .DEFAULTUNIT do p.pressure_units = p.units == .SI ? .METERS : .PSI
 
 	ucf := 1.0
-	if p.units == .SI do ucf = M_PER_FT * M_PER_FT
+	if p.units == .SI {
+		m_per_ft := M_PER_FT // (a variable: Odin folds constants exactly, C rounds first)
+		ucf = m_per_ft * m_per_ft
+	}
 	if hyd.viscos == MISSING {
 		hyd.viscos = VISCOS
 	} else if hyd.viscos > 1e-3 {
@@ -199,8 +202,9 @@ FLOW_UNITS_TEXT := [Flow_Units]string {
 	.CFS = "cfs", .GPM = "gpm", .MGD = "mgd", .IMGD = "Imgd", .AFD = "a-f/d",
 	.LPS = "L/s", .LPM = "Lpm", .MLD = "ML/d", .CMH = "m3/h", .CMD = "m3/d", .CMS = "m3/s",
 }
+// (the report prints the option's keyword, not a unit symbol)
 PRESSURE_UNITS_TEXT := [Pressure_Units]string {
-	.PSI = "psi", .KPA = "kPa", .METERS = "m", .BAR = "bar", .FEET = "ft", .DEFAULTUNIT = "",
+	.PSI = "PSI", .KPA = "KPA", .METERS = "METERS", .BAR = "BAR", .FEET = "FEET", .DEFAULTUNIT = "",
 }
 
 // init_units: the factors from internal units to the user's, and the
@@ -260,9 +264,11 @@ init_units :: proc(p: ^Project) {
 	case .METERS:
 		pcf = M_PER_FT
 	case .KPA:
-		pcf = KPA_PER_PSI * PSI_PER_FT * p.hyd.spgrav
+		kpa := KPA_PER_PSI
+		pcf = kpa * PSI_PER_FT * p.hyd.spgrav
 	case .BAR:
-		pcf = BAR_PER_PSI * PSI_PER_FT * p.hyd.spgrav
+		bar := BAR_PER_PSI
+		pcf = bar * PSI_PER_FT * p.hyd.spgrav
 	case .FEET:
 		pcf = 1
 	}

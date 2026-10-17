@@ -1,0 +1,308 @@
+package epanet
+
+// open.odin — opening and closing the solvers on a project the package
+// owns (EPANET's openhyd/closehyd, openqual/closequal, the leakage setup
+// and the adjacency lists), and the quality run's orchestration
+// (initqual, runqual, nextqual, stepqual) that reads hydraulics back
+// from the file. The per-run arrays come from the heap and go back to it
+// at close, so a project can open and close its solvers freely.
+
+import "core:c/libc"
+
+// build_adjlists lists each node's links as EPANET does: a node's run
+// holds the links in reverse order of their index (EPANET pushes each
+// on the front of a list).
+build_adjlists :: proc(net: ^Network) {
+	nn, nl := net.nnodes, net.nlinks
+	net.adj_first = make([]i32, nn + 2)
+	net.adj_link = make([]i32, 2 * nl + 1)
+	net.adj_node = make([]i32, 2 * nl + 1)
+	degree := make([]i32, nn + 2, context.temp_allocator)
+	for k in 1 ..= nl {
+		degree[net.n1[k]] += 1
+		degree[net.n2[k]] += 1
+	}
+	at: i32 = 1
+	for i in 0 ..= nn {
+		net.adj_first[i] = at
+		at += degree[i]
+	}
+	net.adj_first[nn + 1] = at
+	fill := make([]i32, nn + 1, context.temp_allocator)
+	copy(fill, net.adj_first[:nn + 1])
+	for k := nl; k >= 1; k -= 1 {
+		i, j := net.n1[k], net.n2[k]
+		net.adj_link[fill[i]] = i32(k)
+		net.adj_node[fill[i]] = j
+		fill[i] += 1
+		net.adj_link[fill[j]] = i32(k)
+		net.adj_node[fill[j]] = i
+		fill[j] += 1
+	}
+}
+
+free_adjlists :: proc(net: ^Network) {
+	delete(net.adj_first)
+	delete(net.adj_link)
+	delete(net.adj_node)
+	net.adj_first, net.adj_link, net.adj_node = nil, nil, nil
+}
+
+// unlinked names up to ten junctions no link reaches; 233 when any.
+unlinked :: proc(p: ^Project) -> int {
+	net := &p.net
+	count := 0
+	for i in 1 ..= net.njuncs {
+		if net.adj_first[i] == net.adj_first[i + 1] {
+			count += 1
+			l: Line
+			puts(&l, "Error 234: ")
+			puts(&l, error_message(234))
+			puts(&l, " ")
+			puts(&l, p.node_id[i])
+			writeline(p, line_str(&l))
+		}
+		if count >= 10 do break
+	}
+	return count > 0 ? 233 : 0
+}
+
+// open_hyd readies the hydraulic solver: the checks, the matrix shape,
+// the per-run arrays, the starting flows.
+open_hyd :: proc(p: ^Project) -> int {
+	net, hyd := &p.net, &p.hyd
+	if errcode := validate_project(p); errcode > 0 do return errcode
+	nn, nl, nt := net.nnodes, net.nlinks, net.ntanks
+	sp := create_sparse(Graph{nnodes = nn, njuncs = net.njuncs, nlinks = nl, n1 = net.n1, n2 = net.n2})
+	p.m = {
+		order = sp.order, row = sp.row, ndx = sp.ndx,
+		xlnz = sp.xlnz, nzsub = sp.nzsub, lnz = sp.lnz,
+		aii = make([]f64, nn + 1), aij = make([]f64, sp.ncoeffs + 1),
+		f = make([]f64, nn + 1), temp = make([]f64, nn + 1),
+		link = make([]i32, nn + 1), first = make([]i32, nn + 1),
+	}
+	hyd.p = make([]f64, nl + 1)
+	hyd.y = make([]f64, nl + 1)
+	hyd.xflow = make([]f64, max(nn, nl) + 1)
+	hyd.old_status = make([]Status, nl + nt + 1)
+	build_adjlists(net)
+	if errcode := unlinked(p); errcode != 0 {
+		close_hyd(p)
+		return errcode
+	}
+	for i in 1 ..= nl do init_link_flow(net, hyd, i, net.init_status[i], net.kc[i])
+	return 0
+}
+
+close_hyd :: proc(p: ^Project) {
+	m, hyd := &p.m, &p.hyd
+	delete(m.order); delete(m.row); delete(m.ndx)
+	delete(m.xlnz); delete(m.nzsub); delete(m.lnz)
+	delete(m.aii); delete(m.aij); delete(m.f); delete(m.temp); delete(m.link); delete(m.first)
+	m^ = {}
+	delete(hyd.p); delete(hyd.y); delete(hyd.xflow); delete(hyd.old_status)
+	hyd.p, hyd.y, hyd.xflow, hyd.old_status = nil, nil, nil, nil
+	free_adjlists(&p.net)
+}
+
+// open_leakage turns each leaking pipe into leakage at its junctions.
+open_leakage :: proc(p: ^Project) {
+	net, hyd := &p.net, &p.hyd
+	hyd.has_leakage = false
+	for i in 1 ..= net.njuncs {
+		net.leak_cfa[i], net.leak_cva[i] = 0, 0
+		hyd.leak_qfa[i], hyd.leak_qva[i] = 0, 0
+	}
+	for k in 1 ..= net.nlinks {
+		if net.link_type[k] > .PIPE do continue
+		if net.leak_area[k] > 0 || net.leak_expan[k] > 0 do hyd.has_leakage = true
+	}
+	if !hyd.has_leakage do return
+	// (products of constants go through variables: Odin would fold them
+	// exactly, where C rounds each constant first)
+	c_orif: f64 = 4.8149766
+	c_orif *= 1.e-6
+	m_per_ft := M_PER_FT
+	m2 := m_per_ft * m_per_ft
+	for k in 1 ..= net.nlinks {
+		if net.link_type[k] > .PIPE do continue
+		n1, n2 := net.n1[k], net.n2[k]
+		j1 := net.node_type[n1] == .JUNCTION
+		j2 := net.node_type[n2] == .JUNCTION
+		if !j1 && !j2 do continue
+		if net.leak_area[k] == 0 && net.leak_expan[k] == 0 do continue
+		c_area := c_orif * net.leak_area[k] / m2
+		c_expan := c_orif * net.leak_expan[k] / M_PER_FT
+		len := net.len[k] / 100.
+		if j1 && j2 do len *= 0.5
+		c_area *= len
+		c_expan *= len
+		if j1 {
+			net.leak_cfa[n1] += c_area
+			net.leak_cva[n1] += c_expan
+		}
+		if j2 {
+			net.leak_cfa[n2] += c_area
+			net.leak_cva[n2] += c_expan
+		}
+	}
+	for i in 1 ..= net.njuncs {
+		c_area := net.leak_cfa[i]
+		net.leak_cfa[i] = c_area > 0 ? 1.0 / (c_area * c_area) : 0
+		c_expan := net.leak_cva[i]
+		net.leak_cva[i] = c_expan > 0 ? 1.0 / libc.pow(c_expan, 2. / 3.) : 0
+		if net.leak_cfa[i] > 0 do hyd.leak_qfa[i] = 0.001
+		if net.leak_cva[i] > 0 do hyd.leak_qva[i] = 0.001
+	}
+}
+
+// find_link_leakage: a pipe's leak at the current heads, for reporting.
+find_link_leakage :: proc "contextless" (p: ^Project, i: int) -> f64 {
+	net, hyd := &p.net, &p.hyd
+	if net.link_type[i] > .PIPE do return 0
+	if net.leak_area[i] == 0 && net.leak_expan[i] == 0 do return 0
+	n1, n2 := int(net.n1[i]), int(net.n2[i])
+	if n1 > net.njuncs && n2 > net.njuncs do return 0
+	h1 := max(hyd.head[n1] - net.el[n1], 0)
+	h2 := max(hyd.head[n2] - net.el[n2], 0)
+	m_per_ft := M_PER_FT
+	a := net.leak_area[i] / (m_per_ft * m_per_ft)
+	m := net.leak_expan[i] / M_PER_FT
+	c: f64 = 4.8149766
+	c *= net.len[i] / 100. / 2.0
+	c *= 1.0e-6
+	q1, q2 := 0.0, 0.0
+	if n1 <= net.njuncs do q1 = c * (a + m * h1) * libc.sqrt(h1)
+	if n2 <= net.njuncs do q2 = c * (a + m * h2) * libc.sqrt(h2)
+	if n2 > net.njuncs do q1 *= 2.0
+	if n1 > net.njuncs do q2 *= 2.0
+	return q1 + q2
+}
+
+// ── the quality run ───────────────────────────────────────────────────
+
+// open_qual readies the quality solver; the adjacency lists are built
+// here when hydraulics did not.
+open_qual :: proc(p: ^Project) -> int {
+	net, q := &p.net, &p.q
+	if q.kind != .NONE && net.adj_first == nil {
+		if net.nnodes < 2 do return 223
+		if net.ntanks == 0 do return 224
+		build_adjlists(net)
+		if errcode := unlinked(p); errcode != 0 do return errcode
+	}
+	nl, nn, nt := net.nlinks, net.nnodes, net.ntanks
+	q.out_of_memory = false
+	q.flow_dir = make([]i32, nl + 1)
+	q.pipe_rate = make([]f64, nl + 1)
+	q.link_rc = make([]f64, nl + 1)
+	q.sorted = make([]i32, nl + nt + 1)
+	q.source_mass = make([]f64, nn + 1)
+	q.segs = segments_make(nl + nt)
+	return 0
+}
+
+close_qual :: proc(p: ^Project) {
+	q := &p.q
+	delete(q.flow_dir); delete(q.pipe_rate); delete(q.link_rc); delete(q.sorted); delete(q.source_mass)
+	q.flow_dir, q.pipe_rate, q.link_rc, q.sorted, q.source_mass = nil, nil, nil, nil, nil
+	if q.segs != nil do segments_delete(q.segs)
+	q.segs = nil
+}
+
+// initqual starts the quality run at time zero.
+initqual :: proc(p: ^Project) -> int {
+	t := &p.times
+	if !p.open_hflag do libc.fseek(p.out.hyd_file, libc.long(p.out.hyd_offset), .SET)
+	t.qtime = 0
+	t.htime = 0
+	t.rtime = t.rstart
+	p.rpt.nperiods = 0
+	init_qual(&p.net, &p.hyd, &p.q)
+	return 0
+}
+
+// runqual brings the hydraulics for the next period in (from the file
+// when the hydraulic solver is closed) and saves the period's results.
+runqual :: proc(p: ^Project) -> (t: i64, errcode: int) {
+	q, tm := &p.q, &p.times
+	t = tm.qtime
+	hydtime, hydstep: i64
+	if tm.qtime == tm.htime {
+		if !p.open_hflag {
+			if !readhyd(p, &hydtime) do return t, 307
+			if !readhydstep(p, &hydstep) do return t, 307
+			tm.htime = hydtime
+		}
+		if tm.htime >= tm.rtime {
+			if p.out.saveflag {
+				errcode = saveoutput(p)
+				p.rpt.nperiods += 1
+			}
+			tm.rtime += tm.rstep
+		}
+		if errcode != 0 do return
+		if q.kind != .NONE && tm.qtime < tm.dur {
+			errcode = new_hydraulics(&p.net, &p.hyd, q)
+		}
+		if !p.open_hflag do tm.htime = hydtime + hydstep
+	}
+	return
+}
+
+// nextqual moves quality through the period to the next hydraulic time.
+nextqual :: proc(p: ^Project) -> (tstep: i64, errcode: int) {
+	q, tm := &p.q, &p.times
+	hydstep: i64 = 0
+	if tm.htime <= tm.dur do hydstep = tm.htime - tm.qtime
+	if q.kind != .NONE && hydstep > 0 {
+		qtime: i64 = 0
+		for !q.out_of_memory && qtime < hydstep {
+			dt := min(tm.qstep, hydstep - qtime)
+			qtime += dt
+			transport(&p.net, &p.hyd, tm, q, dt)
+		}
+		if q.out_of_memory do errcode = 101
+	}
+	eval_mass_balance(&p.net, q)
+	if errcode == 0 do tstep = hydstep
+	tm.qtime += hydstep
+	if errcode == 0 && tstep == 0 {
+		if q.kind != .NONE && p.rpt.status != 0 do writemassbalance(p)
+		if p.out.saveflag do errcode = savefinaloutput(p)
+	}
+	return
+}
+
+// stepqual moves quality one quality time step, reading hydraulics as
+// it needs them.
+stepqual :: proc(p: ^Project) -> (tleft: i64, errcode: int) {
+	q, tm := &p.q, &p.times
+	tstep := tm.qstep
+	for {
+		dt := tstep
+		hstep := tm.htime - tm.qtime
+		if hstep < dt {
+			dt = hstep
+			if q.kind != .NONE do transport(&p.net, &p.hyd, tm, q, dt)
+			tm.qtime += dt
+			if p.open_hflag do break
+			t: i64
+			t, errcode = runqual(p)
+			tm.qtime = t
+		} else {
+			if q.kind != .NONE do transport(&p.net, &p.hyd, tm, q, dt)
+			tm.qtime += dt
+		}
+		tstep -= dt
+		if q.out_of_memory do errcode = 101
+		if errcode != 0 || tstep <= 0 do break
+	}
+	eval_mass_balance(&p.net, q)
+	tleft = tm.dur - tm.qtime
+	if errcode == 0 && tleft == 0 {
+		if q.kind != .NONE && p.rpt.status != 0 do writemassbalance(p)
+		if p.out.saveflag do errcode = savefinaloutput(p)
+	}
+	return
+}

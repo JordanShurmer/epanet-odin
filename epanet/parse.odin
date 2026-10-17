@@ -249,17 +249,31 @@ set_error :: #force_inline proc(ps: ^Parser, tok, err: int) -> int {
 // parse_inp reads the file into a new project. Returns the project and
 // EPANET's error code: 0, 200 when lines had errors, or a fatal code.
 parse_inp :: proc(path: string) -> (p: ^Project, errcode: int) {
-	p = new(Project)
+	p = project_new()
+	if p == nil do return nil, 101
+	errcode = read_inp(p, path)
+	if errcode == 302 {
+		project_free(p)
+		return nil, errcode
+	}
+	return
+}
+
+// project_new makes an empty project with its arena.
+project_new :: proc() -> ^Project {
+	p := new(Project)
 	if virtual.arena_init_growing(&p.arena) != nil {
 		free(p)
-		return nil, 101
+		return nil
 	}
+	return p
+}
+
+// read_inp reads the file into an existing project, from its arena.
+read_inp :: proc(p: ^Project, path: string) -> (errcode: int) {
 	context.allocator = virtual.arena_allocator(&p.arena)
 	data, rerr := os.read_entire_file_from_path(path, context.allocator)
-	if rerr != nil {
-		project_free(p)
-		return nil, 302
-	}
+	if rerr != nil do return 302
 	ps := Parser{p = p}
 	ps.lines = split_lines(string(data))
 	set_defaults(p)

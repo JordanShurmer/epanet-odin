@@ -200,10 +200,17 @@ saveenergy :: proc "contextless" (p: ^Project) -> int {
 		}
 		e.time_on_line *= 100.0
 		e.efficiency *= 100.0
+		// (constants folded at run time, as C's compiler folds them)
 		if p.units == .SI {
-			e.kwhrs_per_flow *= (1000. / LPS_PER_CFS / 3600.)
+			f: f64 = 1000.
+			f /= LPS_PER_CFS
+			f /= 3600.
+			e.kwhrs_per_flow *= f
 		} else {
-			e.kwhrs_per_flow *= (1.0e6 / GPM_PER_CFS / 60.)
+			f: f64 = 1.0e6
+			f /= GPM_PER_CFS
+			f /= 60.
+			e.kwhrs_per_flow *= f
 		}
 		x := [6]f32{f32(e.time_on_line), f32(e.efficiency), f32(e.kwhrs_per_flow), f32(e.kwhrs), f32(e.max_kwatts), f32(e.total_cost)}
 		if !write_i32(f, net.pump_link[i]) do return 308

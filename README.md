@@ -43,9 +43,13 @@ epanet/         the Odin package `epanet` — the rewrite
                   energy and results tables, errors
   output.odin     the binary output file and the hydraulics file
   errors.odin     EPANET's error messages by code
+  open.odin       opening and closing the solvers on an owned project; the
+                  quality run's orchestration over the hydraulics file
+api/            the toolkit: EN_* over the Odin project, its own static library
 cmd/dumpnet/    reads an .inp with the Odin reader and prints the project
 harness/        the plug-in validation
-  test.sh         builds the three binaries from EPANET's sources and compares
+  test.sh         builds the four binaries (plain EPANET, the plug-in build, its
+                  shadow, and the pure Odin toolkit) and compares
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
   run.c           driver: every node and link value and quality, every step, %.17g,
                   and the report, output and hydraulics files when asked
@@ -196,11 +200,31 @@ Ported, bit-exact on every fixture:
    closed pipe, one pressure-deficient node). Still C's: the input error
    messages (`inperrmsg`, `ruleerrmsg`) and `clocktime`'s progress text.
 
+10. **The toolkit** — `epanet.c` (`api/api.odin`, with `open.odin`
+    underneath): the `EN_*` functions with EPANET's names, calling
+    convention and error codes, as a static library of their own. The
+    running half: projects and their scratch files, `EN_open`, the
+    hydraulic and quality runs (`EN_solveH`, `EN_openH` … `EN_closeQ`,
+    `EN_stepQ`, the hydraulics file saved and reused), the report, and
+    every getter (counts, options, times, nodes, links, demands,
+    patterns, curves, controls, rules, statistics). Under it the project
+    opens its own solvers: the matrix shape from `sparse.odin`, the
+    adjacency lists, the leakage setup, the quality arrays and segment
+    store. `harness/run.c` now also links this library and nothing of
+    EPANET's (`run-pure`), and prints the same results and writes the
+    same three files as plain EPANET on every fixture. One trap found on
+    the way: Odin folds a product of two constants exactly, where C
+    rounds each constant to a double first, a last-bit difference that
+    grows through a Newton iteration; such products go through variables.
+    Not yet: the editing calls (`EN_set*`, `EN_add*`, `EN_delete*`,
+    `EN_saveinpfile`), demand names, link vertices, comments and tags,
+    and the input error messages.
+
 Next, in order:
 
-10. **The toolkit API** — `EN_*` over the Odin project, so a program links
-    the Odin library instead of `libepanet2.a`; `run.c` built against it
-    must print what it prints against EPANET, files included.
+11. **The editing toolkit** — `EN_set*`, `EN_add*`, `EN_delete*`,
+    `EN_saveinpfile` (`inpfile.c`): a project built and changed through
+    the API, not only read from a file.
 
 ## Living inside bywater-mill
 

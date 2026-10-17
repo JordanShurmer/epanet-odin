@@ -105,6 +105,7 @@ Project :: struct {
 	tmp_hyd_fname, tmp_out_fname: string, // scratch files
 	tmp_stat_fname:               string,
 	warnflag:                     int, // the last run's warning code
+	openflag, open_hflag:         bool, // a network is loaded; the hydraulic solver is open
 	chem_name, chem_units:        string,
 	def_pat_id:                   string,
 	kbulk, kwall, rfactor:        f64, // global reaction coefficients, per day until converted

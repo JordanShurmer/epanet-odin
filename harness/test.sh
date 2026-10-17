@@ -14,13 +14,14 @@
 #   ASAN=1 harness/test.sh     every binary under AddressSanitizer (both
 #                              sides; needs libclang-rt-<ver>-dev)
 #
-# Three binaries of the same driver (harness/run.c) are built from EPANET's
-# own sources: `c` is plain EPANET; `odin` has each symbol in SWAP renamed
-# away in its object (objcopy --redefine-sym linsolve=linsolve_c) and supplied
-# by harness/bridge.c, which calls the Odin package; `shadow` is the same with
-# every swapped call running both and comparing. Then for every fixture: c and
-# odin must print the same results (bit-exact, else within TOL relative and
-# noted), and shadow must report no per-call mismatches.
+# Four binaries of the same driver (harness/run.c): `c` is plain EPANET;
+# `odin` has each symbol in SWAP renamed away in its object (objcopy
+# --redefine-sym linsolve=linsolve_c) and supplied by harness/bridge.c, which
+# calls the Odin package; `shadow` is the same with every swapped call running
+# both and comparing; `pure` links the Odin toolkit library (api/) and no
+# EPANET object at all. Then for every fixture: c, odin and pure must print
+# the same results (bit-exact, else within TOL relative and noted) and write
+# the same files, and shadow must report no per-call mismatches.
 #
 # ponytail: a shell loop over clang and objcopy; cmake stays out of it.
 set -uo pipefail
@@ -132,10 +133,14 @@ run $CC $CFLAGS -DSHADOW -c harness/bridge.c -o "$B/bridge-shadow.o" || bad "com
 run $CC $CFLAGS "$B/run.o" "$B"/c/*.o -lm -o "$B/run-c" || bad "link run-c"
 run $CC $CFLAGS "$B/dumpnet.o" "$B"/c/*.o -lm -o "$B/dumpnet-c" || bad "link dumpnet-c"
 run "$ODIN" build cmd/dumpnet -out:"$B/dumpnet-odin" $ODINFLAGS -vet -strict-style || bad "odin build dumpnet"
+note "odin build api"
+run "$ODIN" build api -build-mode:static -out:"$B/libepanet-api.a" \
+    -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build api"
+run $CC $CFLAGS "$B/run.o" "$B/libepanet-api.a" -lm -o "$B/run-pure" || bad "link run-pure"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
 [ "$_fail" -eq 0 ] || { tally "epanet-odin"; exit 1; }
-ok "build c odin shadow dumpnet"
+ok "build c odin shadow pure dumpnet"
 
 # ── compare ─────────────────────────────────────────────────────────────
 # same A B — exit 0 when every number on every line is within TOL (relative)
@@ -182,8 +187,8 @@ check() {
 
     # The three files: the report less its dates, the output file and the
     # hydraulics file, byte for byte.
+    undated() { sed -e '1s/^\(  Page 1 *\).*$/\1DATE/' -e 's/^\(  Analysis \(begun\|ended\) \).*$/\1DATE/' "$1"; }
     if [ $rc_c -eq 0 ]; then
-        undated() { sed -e '1s/^\(  Page 1 *\).*$/\1DATE/' -e 's/^\(  Analysis \(begun\|ended\) \).*$/\1DATE/' "$1"; }
         if diff=$(diff <(undated "$B/$fx.c.rpt") <(undated "$B/$fx.odin.rpt")); then
             ok "$fx report identical ($(wc -l <"$B/$fx.c.rpt") lines)"
         else
@@ -196,6 +201,34 @@ check() {
                 bad "$fx .$ext" "$(cmp "$B/$fx.c.$ext" "$B/$fx.odin.$ext" 2>&1 | head -1)"
             fi
         done
+    fi
+
+    # The pure build, the toolkit over the Odin project alone: the same
+    # results and the same files as plain EPANET.
+    "$B/run-pure" "$inp" "${mode:--}" "$B/$fx.pure" >"$B/$fx.pure.txt" 2>"$B/$fx.pure.err"
+    rc_p=$?
+    if [ $rc_c -ne $rc_p ]; then
+        bad "$fx pure" "exit c=$rc_c pure=$rc_p" "$(head -1 "$B/$fx.pure.err")"
+    elif [ $rc_c -eq 0 ]; then
+        if cmp -s "$B/$fx.c.txt" "$B/$fx.pure.txt"; then
+            ok "$fx pure results bit-exact"
+        else
+            bad "$fx pure results" "$(diff "$B/$fx.c.txt" "$B/$fx.pure.txt" | head -3)" "diff $B/$fx.c.txt $B/$fx.pure.txt"
+        fi
+        if diff=$(diff <(undated "$B/$fx.c.rpt") <(undated "$B/$fx.pure.rpt")); then
+            ok "$fx pure report identical"
+        else
+            bad "$fx pure report" "$(echo "$diff" | head -5)" "diff $B/$fx.c.rpt $B/$fx.pure.rpt"
+        fi
+        for ext in out hyd; do
+            if cmp -s "$B/$fx.c.$ext" "$B/$fx.pure.$ext"; then
+                ok "$fx pure .$ext identical"
+            else
+                bad "$fx pure .$ext" "$(cmp "$B/$fx.c.$ext" "$B/$fx.pure.$ext" 2>&1 | head -1)"
+            fi
+        done
+    else
+        ok "$fx pure fails as EPANET does"
     fi
 
     "$B/run-shadow" "$inp" "${mode:--}" >/dev/null 2>"$B/$fx.shadow.err"
