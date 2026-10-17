@@ -27,11 +27,12 @@ epanet/         the Odin package `epanet` — the rewrite
   hydsolve.odin   the Newton loop
   leakage.odin    pipe leaks as node demand, per trial
   hydraul.odin    the engine around it: demands, controls, time step, energy
+  quality.odin    water quality: segments, transport, reactions, tank mixing
   export.odin     the C face: one exported proc per swapped EPANET symbol
 harness/        the plug-in validation
   test.sh         builds the three binaries from EPANET's sources and compares
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
-  run.c           driver: every node and link value, every time step, %.17g
+  run.c           driver: every node and link value and quality, every step, %.17g
   fixtures/       small networks that reach the branches the real ones do not
   out.sh          the ✓/✗ output vocabulary the script speaks
 EPANET/         OWA EPANET, cloned on demand (gitignored)
@@ -84,7 +85,10 @@ turbulent flow, emitters, pressure-driven demand, a pump speed pattern) and
 `cm-leakage.inp` (Chezy-Manning, leaking pipes, emitter backflow) and
 `rules-energy.inp` (rules on a tank and the clock, a volume curve, an
 efficiency curve with energy prices and patterns, a reservoir head pattern,
-timer and clock-time controls). Add your own networks with `EXTRA_FIXTURES="…"`, or run only some with `FIXTURES="…"`.
+timer and clock-time controls), `quality-mix.inp` (second-order bulk and
+zero-order wall decay to a limiting potential, every tank mixing model,
+every booster source type) and `quality-age.inp` (water age). Add your own
+networks with `EXTRA_FIXTURES="…"`, or run only some with `FIXTURES="…"`.
 
 ## Roadmap — core out
 
@@ -120,11 +124,24 @@ Ported, bit-exact on every fixture:
    syncs the mirror around the call; so are `openhyd`/`inithyd`/`runhyd`/
    `nexthyd`, the orchestration with the file I/O and reports.
 
+6. **Water quality** — `quality.c`, `qualroute.c`, `qualreact.c`
+   (`quality.odin`): the volume segments as arrays with index links, the
+   engine's own store rather than EPANET's pool; transport in flow order,
+   the topological sort, sources, bulk and wall reactions, water age,
+   tracing, the four tank mixing models, the mass balance. The entry
+   points `initqual`, `runqual`, `nextqual`, `stepqual` and `avgqual` are
+   swapped as a unit, with their file reads and report writes kept in the
+   bridge. In the shadow build the two engines run side by side on their
+   own segment stores and are compared chain by chain, segment by segment.
+   The driver runs every fixture twice: hydraulics and quality together,
+   and quality from the hydraulics file with `EN_stepQ`.
+
 Next, in order:
 
-6. **Water quality** — `quality.c`, `qualroute.c`, `qualreact.c`.
-7. **The outside** — `.inp` parsing, reporting, the toolkit API; at that
-   point a program links the Odin library instead of `libepanet2.a`.
+7. **The outside** — `quality.c`, `qualroute.c`, `qualreact.c`.
+7. **The outside** — `openhyd`/`inithyd`/`runhyd`/`nexthyd` and the rule
+   engine, then `.inp` parsing, reporting, the toolkit API; at that point
+   a program links the Odin library instead of `libepanet2.a`.
 
 ## Living inside bywater-mill
 

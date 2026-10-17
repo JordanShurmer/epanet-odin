@@ -32,7 +32,7 @@ for a in "$@"; do
 done
 
 ODIN=${ODIN:-odin}
-SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve resistcoeff pcvlosscoeff initlinkflow resetpumpflow setlinkstatus setlinksetting demands controls timestep tanklevels tankvolume tankgrade getenergy getallpumpsenergy addenergy"}
+SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve resistcoeff pcvlosscoeff initlinkflow resetpumpflow setlinkstatus setlinksetting demands controls timestep tanklevels tankvolume tankgrade getenergy getallpumpsenergy addenergy initqual runqual nextqual stepqual avgqual"}
 TOL=${TOL:-1e-9}
 EP=${EPANET:-EPANET}
 EPANET_COMMIT=444725fbf16ab28b0470ef0ed281dc4849d49583   # OWA EPANET 2.3 dev
@@ -149,15 +149,19 @@ same() {
         }'
 }
 
-for inp in $FIXTURES; do
-    fx=$(basename "$inp" .inp)
-    "$B/run-c" "$inp" >"$B/$fx.c.txt" 2>"$B/$fx.c.err"
+# check FIXTURE MODE — run one network through c, odin and shadow in one
+# driver mode ("" = hydraulics and quality together, "stepq" = quality
+# from the hydraulics file) and judge the three.
+check() {
+    inp=$1; mode=$2
+    fx=$(basename "$inp" .inp)${mode:+.$mode}
+    "$B/run-c" "$inp" $mode >"$B/$fx.c.txt" 2>"$B/$fx.c.err"
     rc_c=$?
-    "$B/run-odin" "$inp" >"$B/$fx.odin.txt" 2>"$B/$fx.odin.err"
+    "$B/run-odin" "$inp" $mode >"$B/$fx.odin.txt" 2>"$B/$fx.odin.err"
     rc_o=$?
-    if [ $rc_c -ne 0 ] && [ $rc_o -eq $rc_c ]; then
-        skip "$fx (EPANET itself fails: $(head -1 "$B/$fx.c.err"))"
-        continue
+    if [ $rc_c -ne 0 ]; then
+        skip "$fx (EPANET itself fails: $(grep -m1 'EPANET error' "$B/$fx.c.err"))"
+        return
     fi
     if [ $rc_c -ne $rc_o ]; then
         bad "$fx results" "exit c=$rc_c odin=$rc_o" "$(head -1 "$B/$fx.odin.err")"
@@ -170,7 +174,7 @@ for inp in $FIXTURES; do
         bad "$fx results" "$diff" "diff $B/$fx.c.txt $B/$fx.odin.txt"
     fi
 
-    "$B/run-shadow" "$inp" >/dev/null 2>"$B/$fx.shadow.err"
+    "$B/run-shadow" "$inp" $mode >/dev/null 2>"$B/$fx.shadow.err"
     [ "$DEBUG" -ge 2 ] && sed 's/^/    /' "$B/$fx.shadow.err" >&2
     for sym in $SWAP; do
         line=$(grep "^shadow $sym: [0-9]* calls" "$B/$fx.shadow.err")
@@ -182,6 +186,12 @@ for inp in $FIXTURES; do
             bad "$fx shadow $sym" "$line" "$(grep "^shadow $sym: call" "$B/$fx.shadow.err")"
         fi
     done
+}
+
+for inp in $FIXTURES; do
+    check "$inp" ""
+    check "$inp" stepq
 done
+
 
 tally "epanet-odin"

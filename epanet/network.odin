@@ -54,6 +54,33 @@ Demand_Model :: enum i32 {
 	PDA, // pressure driven
 }
 
+Node_Type :: enum i32 {
+	JUNCTION,
+	RESERVOIR,
+	TANK,
+}
+
+Qual_Type :: enum i32 {
+	NONE,
+	CHEM, // a chemical
+	AGE, // water age
+	TRACE, // percent of flow from one node
+}
+
+Source_Type :: enum i32 {
+	CONCEN, // inflow concentration
+	MASS, // mass inflow booster
+	SETPOINT, // setpoint booster
+	FLOWPACED, // flow paced booster
+}
+
+Mix_Model :: enum i32 {
+	MIX1, // complete mix
+	MIX2, // two compartments
+	FIFO,
+	LIFO,
+}
+
 Control_Type :: enum i32 {
 	LOWLEVEL, // act when grade falls below a level
 	HILEVEL, // act when grade rises above a level
@@ -66,6 +93,8 @@ TINY : f64 : 1e-6
 BIG : f64 : 1e10
 MINPDIFF : f64 : 0.1 // least PDA pressure range (psi or m)
 QZERO : f64 : 1e-6 // as good as no flow (cfs)
+Q_STAGNANT : f64 : 0.005 / 448.831 // 0.005 gpm in cfs: no flow, for quality
+L_PER_FT3 : f64 : 28.317
 KW_PER_HP : f64 : 0.7457
 SEC_PER_DAY :: 86400
 CBIG : f64 : 1e8 // a huge resistance: a closed link
@@ -118,6 +147,17 @@ Network :: struct {
 	// nodes: elevation, emitter coefficient, leak coefficients (junctions)
 	el, ke:                                  []f64,
 	leak_cfa, leak_cva:                      []f64,
+	node_type:                               []Node_Type,
+	c0:                                      []f64, // initial quality
+	// a node's quality source, if has_source
+	has_source:                              []b32,
+	source_type:                             []Source_Type,
+	source_c0:                               []f64,
+	source_pat:                              []i32,
+
+	// adjacency: node i's links are adj_link[adj_first[i] ..< adj_first[i+1]],
+	// adj_node the node at the other end, in EPANET's list order
+	adj_first, adj_link, adj_node:           []i32,
 
 	// demands: node i's are demand_base[demand_first[i] ..< demand_first[i+1]]
 	demand_first:                            []i32,
@@ -129,6 +169,7 @@ Network :: struct {
 	link_type:                               []Link_Type,
 	n1, n2:                                  []i32,
 	diam, len, km, kc, r:                    []f64, // diameter, length, minor loss, roughness/setting, resistance
+	link_kb, link_kw:                        []f64, // bulk and wall reaction coefficients
 	link_pump, link_valve:                   []i32, // the pump or valve a link is, 0 for none
 	init_status:                             []Status,
 	init_setting:                            []f64,
@@ -139,6 +180,8 @@ Network :: struct {
 	tank_vmin, tank_vmax:                    []f64,
 	tank_pat, tank_vcurve:                   []i32, // a reservoir's head pattern; a tank's volume curve
 	tank_overflow:                           []b32,
+	tank_v0, tank_v1frac, tank_kb:           []f64, // initial volume, mixing-zone fraction, bulk coefficient
+	tank_mix:                                []Mix_Model,
 
 	// pumps
 	pump_link:                               []i32,
@@ -166,6 +209,7 @@ Network :: struct {
 
 	// unit conversion: curves are stored in user units
 	ucf_flow, ucf_head, ucf_volume:          f64,
+	ucf_quality, ucf_elev:                   f64,
 }
 
 // Hydraulics is the solver's settings and state over nodes and links.

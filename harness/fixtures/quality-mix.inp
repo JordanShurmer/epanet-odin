@@ -1,0 +1,112 @@
+[TITLE]
+A chemical with second-order bulk decay to a limiting potential, zero-order
+wall decay, every tank mixing model, and every booster source type.
+
+[JUNCTIONS]
+;ID   Elev  Demand  Pattern
+J1    100   0
+J2    100   120     P1
+J3    102   80      P1
+J4    104   60      P1
+J5    106   90      P1
+J6    104   70      P1
+J7    102   50      P1
+J8    100   100     P1
+
+[RESERVOIRS]
+R1    260
+
+[TANKS]
+;ID   Elev  Init  Min  Max  Diam  MinVol
+T1    180   12    2    25   40    0
+T2    182   10    2    24   36    0
+T3    178   14    3    26   44    0
+T4    184   8     2    22   30    0
+
+[PIPES]
+;ID   N1   N2   Len   Diam  Rough  MLoss  Status
+P1    J1   J2   1000  12    110    0      Open
+P2    J2   J3   1000  10    110    0      Open
+P3    J3   J4   1000  10    110    0      Open
+P4    J4   J5   1000  8     110    0      Open
+P5    J5   J6   1000  8     110    0      Open
+P6    J6   J7   1000  8     110    0      Open
+P7    J7   J8   1000  8     110    0      Open
+P8    J8   J2   1500  6     110    0      Open
+P9    J3   J7   1500  6     110    0      Open
+P10   J3   T1   600   10    110    0      Open
+P11   J5   T2   600   8     110    0      Open
+P12   J7   T3   600   8     110    0      Open
+P13   J8   T4   600   8     110    0      Open
+
+[PUMPS]
+PU1   R1   J1   HEAD C1
+
+[CURVES]
+C1    0     180
+C1    600   150
+C1    1200  90
+
+[PATTERNS]
+P1    0.6  0.6  0.7  0.9  1.1  1.4  1.5  1.3  1.1  1.0  1.0  1.0
+P1    1.0  1.1  1.3  1.5  1.4  1.2  1.0  0.9  0.8  0.7  0.6  0.6
+SP    1.0  1.0  0.5  0.5  1.5  1.5  1.0  1.0  0.0  0.0  1.0  1.0
+
+[MIXING]
+;tank  model  fraction
+T1     MIXED
+T2     2COMP  0.3
+T3     FIFO
+T4     LIFO
+
+[QUALITY]
+;initial quality
+R1    1.2
+J1    0.5
+J2    0.5
+J3    0.4
+J4    0.3
+J5    0.3
+J6    0.2
+J7    0.2
+J8    0.2
+T1    0.6
+T2    0.5
+T3    0.5
+T4    0.4
+
+[SOURCES]
+;node  type       strength  pattern
+R1     CONCEN     1.2
+J3     SETPOINT   1.0       SP
+J5     FLOWPACED  0.3
+J7     MASS       20        SP
+
+[REACTIONS]
+Order Bulk      2
+Order Wall      0
+Order Tank      1
+Global Bulk     -0.8
+Global Wall     -0.05
+Limiting Potential 0.05
+Bulk P9         -1.5
+Wall P3         -0.1
+Tank T2         -0.3
+
+[OPTIONS]
+Units      GPM
+Headloss   H-W
+Quality    Chlorine mg/L
+Diffusivity 1.0
+Tolerance  0.01
+Trials     80
+Accuracy   0.001
+Unbalanced Continue 10
+
+[TIMES]
+Duration            36:00
+Hydraulic Timestep  1:00
+Quality Timestep    0:05
+Pattern Timestep    1:00
+
+[END]

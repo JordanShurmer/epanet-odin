@@ -14,13 +14,20 @@ import "core:c/libc"
 Network_C :: struct {
 	nnodes, njuncs, nlinks:                      c.int,
 	ntanks, npumps, nvalves, ncontrols:          c.int,
-	ncurves, npatterns, ndemands:                c.int,
+	ncurves, npatterns, ndemands, nadj:          c.int,
 	def_pat:                                     c.int,
 	el, ke, leak_cfa, leak_cva:                  [^]f64,
+	node_type:                                   [^]c.int,
+	c0:                                          [^]f64,
+	has_source:                                  [^]b32,
+	source_type, source_pat:                     [^]c.int,
+	source_c0:                                   [^]f64,
+	adj_first, adj_link, adj_node:               [^]c.int,
 	demand_first, demand_pat:                    [^]c.int,
 	demand_base:                                 [^]f64,
 	link_type, n1, n2:                           [^]c.int,
 	diam, len, km, kc, r:                        [^]f64,
+	link_kb, link_kw:                            [^]f64,
 	link_pump, link_valve:                       [^]c.int,
 	init_status:                                 [^]c.int,
 	init_setting:                                [^]f64,
@@ -29,6 +36,8 @@ Network_C :: struct {
 	tank_vmin, tank_vmax:                        [^]f64,
 	tank_pat, tank_vcurve:                       [^]c.int,
 	tank_overflow:                               [^]b32,
+	tank_v0, tank_v1frac, tank_kb:               [^]f64,
+	tank_mix:                                    [^]c.int,
 	pump_link, pump_type, pump_hcurve:           [^]c.int,
 	pump_ecurve:                                 [^]c.int,
 	pump_h0, pump_r, pump_n, pump_hmax, pump_q0: [^]f64,
@@ -45,6 +54,7 @@ Network_C :: struct {
 	control_time:                                [^]i64,
 	control_enabled:                             [^]b32,
 	ucf_flow, ucf_head, ucf_volume:              f64,
+	ucf_quality, ucf_elev:                       f64,
 }
 
 Hydraulics_C :: struct {
@@ -71,6 +81,21 @@ Matrix_C :: struct {
 	order, row, ndx:               [^]c.int,
 }
 
+// Quality_C: the engine's settings and state as the bridge holds them.
+// segs is the engine's own store, from odin_quality_new.
+Quality_C :: struct {
+	kind, trace_node, reactive, out_of_memory:          c.int,
+	ctol, diffus, climit:                               f64,
+	bulk_order, wall_order, tank_order:                 f64,
+	sc, bucf, tucf:                                     f64,
+	node_qual, tank_c, link_rc, pipe_rate, source_mass: [^]f64,
+	flow_dir, sorted:                                   [^]c.int,
+	wbulk, wwall, wtank, wsource, source_qual:          f64,
+	initial, inflow, outflow, reacted, final, ratio:    f64,
+	seg_count:                                          c.int,
+	segs:                                               ^Segments,
+}
+
 // Project_C is what every export takes. times is EPANET's own Times
 // struct, whose layout Times matches.
 Project_C :: struct {
@@ -79,6 +104,7 @@ Project_C :: struct {
 	m:     ^Matrix_C,
 	times: ^Times,
 	hooks: ^Hooks,
+	qual:  ^Quality_C,
 }
 
 Solution_C :: struct {
@@ -92,6 +118,7 @@ Views :: struct {
 	net: Network,
 	hyd: Hydraulics,
 	m:   Smatrix,
+	q:   Quality,
 }
 
 // view builds the slices. The curve and pattern tables need an allocator:
@@ -100,7 +127,7 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 	n, h, mc := p.net, p.hyd, p.m
 	nn, nj, nl := int(n.nnodes), int(n.njuncs), int(n.nlinks)
 	nt, np, nv, nk := int(n.ntanks), int(n.npumps), int(n.nvalves), int(n.ncontrols)
-	nc, npat, nd := int(n.ncurves), int(n.npatterns), int(n.ndemands)
+	nc, npat, nd, na := int(n.ncurves), int(n.npatterns), int(n.ndemands), int(n.nadj)
 
 	curves := make([]Curve, nc + 1, context.temp_allocator)
 	for i in 1 ..= nc do curves[i] = {n.curve_x[i][:n.curve_npts[i]], n.curve_y[i][:n.curve_npts[i]]}
@@ -112,10 +139,15 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		ntanks = nt, npumps = np, nvalves = nv, ncontrols = nk,
 		el = n.el[:nn + 1], ke = n.ke[:nn + 1],
 		leak_cfa = n.leak_cfa[:nj + 1], leak_cva = n.leak_cva[:nj + 1],
+		node_type = ([^]Node_Type)(n.node_type)[:nn + 1], c0 = n.c0[:nn + 1],
+		has_source = n.has_source[:nn + 1], source_type = ([^]Source_Type)(n.source_type)[:nn + 1],
+		source_c0 = n.source_c0[:nn + 1], source_pat = n.source_pat[:nn + 1],
+		adj_first = n.adj_first[:nn + 2], adj_link = n.adj_link[:na + 1], adj_node = n.adj_node[:na + 1],
 		demand_first = n.demand_first[:nj + 2], demand_base = n.demand_base[:nd + 1],
 		demand_pat = n.demand_pat[:nd + 1], def_pat = int(n.def_pat),
 		link_type = ([^]Link_Type)(n.link_type)[:nl + 1], n1 = n.n1[:nl + 1], n2 = n.n2[:nl + 1],
 		diam = n.diam[:nl + 1], len = n.len[:nl + 1], km = n.km[:nl + 1], kc = n.kc[:nl + 1], r = n.r[:nl + 1],
+		link_kb = n.link_kb[:nl + 1], link_kw = n.link_kw[:nl + 1],
 		link_pump = n.link_pump[:nl + 1], link_valve = n.link_valve[:nl + 1],
 		init_status = ([^]Status)(n.init_status)[:nl + 1], init_setting = n.init_setting[:nl + 1],
 		tank_node = n.tank_node[:nt + 1],
@@ -123,6 +155,8 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		tank_vmin = n.tank_vmin[:nt + 1], tank_vmax = n.tank_vmax[:nt + 1],
 		tank_pat = n.tank_pat[:nt + 1], tank_vcurve = n.tank_vcurve[:nt + 1],
 		tank_overflow = n.tank_overflow[:nt + 1],
+		tank_v0 = n.tank_v0[:nt + 1], tank_v1frac = n.tank_v1frac[:nt + 1], tank_kb = n.tank_kb[:nt + 1],
+		tank_mix = ([^]Mix_Model)(n.tank_mix)[:nt + 1],
 		pump_link = n.pump_link[:np + 1], pump_type = ([^]Pump_Type)(n.pump_type)[:np + 1],
 		pump_hcurve = n.pump_hcurve[:np + 1], pump_ecurve = n.pump_ecurve[:np + 1],
 		pump_h0 = n.pump_h0[:np + 1], pump_r = n.pump_r[:np + 1], pump_n = n.pump_n[:np + 1],
@@ -136,6 +170,7 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		control_status = ([^]Status)(n.control_status)[:nk + 1],
 		control_time = n.control_time[:nk + 1], control_enabled = n.control_enabled[:nk + 1],
 		ucf_flow = n.ucf_flow, ucf_head = n.ucf_head, ucf_volume = n.ucf_volume,
+		ucf_quality = n.ucf_quality, ucf_elev = n.ucf_elev,
 	}
 	v.hyd = {
 		formflag = Headloss_Formula(h.formflag), demand_model = Demand_Model(h.demand_model),
@@ -157,6 +192,21 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		status = ([^]Status)(h.status)[:nl + 1], p = h.p[:nl + 1], y = h.y[:nl + 1],
 		tank_volume = h.tank_volume[:nt + 1], energy = h.energy[:np + 1],
 	}
+	if q := p.qual; q != nil {
+		v.q = {
+			kind = Qual_Type(q.kind), trace_node = int(q.trace_node),
+			reactive = q.reactive != 0, out_of_memory = q.out_of_memory != 0,
+			ctol = q.ctol, diffus = q.diffus, climit = q.climit,
+			bulk_order = q.bulk_order, wall_order = q.wall_order, tank_order = q.tank_order,
+			sc = q.sc, bucf = q.bucf, tucf = q.tucf,
+			node_qual = q.node_qual[:nn + 1], tank_c = q.tank_c[:nt + 1], link_rc = q.link_rc[:nl + 1],
+			pipe_rate = q.pipe_rate[:nl + 1], source_mass = q.source_mass[:nn + 1],
+			flow_dir = q.flow_dir[:nl + 1], sorted = q.sorted[:nn + 1],
+			wbulk = q.wbulk, wwall = q.wwall, wtank = q.wtank, wsource = q.wsource, source_qual = q.source_qual,
+			balance = {q.initial, q.inflow, q.outflow, q.reacted, q.final, q.ratio, int(q.seg_count)},
+			segs = q.segs,
+		}
+	}
 	if mc != nil {
 		ncf := int(mc.ncoeffs)
 		v.m = {
@@ -173,6 +223,15 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 unview :: proc "contextless" (p: ^Project_C, v: ^Views) {
 	p.hyd.dsystem = v.hyd.dsystem
 	p.hyd.emax = v.hyd.emax
+	if q := p.qual; q != nil {
+		b := v.q.balance
+		q.reactive = c.int(v.q.reactive)
+		q.out_of_memory = c.int(v.q.out_of_memory)
+		q.sc, q.bucf, q.tucf = v.q.sc, v.q.bucf, v.q.tucf
+		q.wbulk, q.wwall, q.wtank, q.wsource, q.source_qual = v.q.wbulk, v.q.wwall, v.q.wtank, v.q.wsource, v.q.source_qual
+		q.initial, q.inflow, q.outflow, q.reacted, q.final, q.ratio = b.initial, b.inflow, b.outflow, b.reacted, b.final, b.ratio
+		q.seg_count = c.int(b.seg_count)
+	}
 }
 
 // ── the linear solver ─────────────────────────────────────────────────
@@ -377,4 +436,75 @@ odin_addenergy :: proc "c" (p: ^Project_C, hstep: i64) {
 	v := view(p)
 	add_energy(&v.net, &v.hyd, p.times, hstep)
 	unview(p, &v)
+}
+
+// ── water quality ─────────────────────────────────────────────────────
+
+@(export, link_name = "odin_quality_new")
+odin_quality_new :: proc "c" (nchains: c.int) -> ^Segments {
+	context = runtime.default_context()
+	return segments_make(int(nchains))
+}
+
+@(export, link_name = "odin_quality_free")
+odin_quality_free :: proc "c" (s: ^Segments) {
+	context = runtime.default_context()
+	segments_delete(s)
+}
+
+@(export, link_name = "odin_initqual")
+odin_initqual :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	init_qual(&v.net, &v.hyd, &v.q)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_qual_newhydraulics")
+odin_qual_newhydraulics :: proc "c" (p: ^Project_C) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	rc := new_hydraulics(&v.net, &v.hyd, &v.q)
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_transport")
+odin_transport :: proc "c" (p: ^Project_C, dt: i64) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	transport(&v.net, &v.hyd, p.times, &v.q, dt)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_evalmassbalance")
+odin_evalmassbalance :: proc "c" (p: ^Project_C) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	eval_mass_balance(&v.net, &v.q)
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_avgqual")
+odin_avgqual :: proc "c" (p: ^Project_C, k: c.int) -> f64 {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	return avg_qual(&v.net, &v.q, int(k))
+}
+
+// odin_segments lists chain k's segments, first to last, for the shadow.
+@(export, link_name = "odin_segments")
+odin_segments :: proc "c" (s: ^Segments, k: c.int, v, cq: [^]f64, max: c.int) -> c.int {
+	n: c.int = 0
+	for seg := s.first[k]; seg != 0 && n < max; seg = s.prev[seg] {
+		v[n] = s.v[seg]
+		cq[n] = s.c[seg]
+		n += 1
+	}
+	return n
 }

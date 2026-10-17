@@ -35,13 +35,20 @@
 typedef struct {
     int nnodes, njuncs, nlinks;
     int ntanks, npumps, nvalves, ncontrols;
-    int ncurves, npatterns, ndemands;
+    int ncurves, npatterns, ndemands, nadj;
     int def_pat;
     double *el, *ke, *leak_cfa, *leak_cva;
+    int *node_type;
+    double *c0;
+    int *has_source;
+    int *source_type, *source_pat;
+    double *source_c0;
+    int *adj_first, *adj_link, *adj_node;
     int *demand_first, *demand_pat;
     double *demand_base;
     int *link_type, *n1, *n2;
     double *diam, *len, *km, *kc, *r;
+    double *link_kb, *link_kw;
     int *link_pump, *link_valve;
     int *init_status;
     double *init_setting;
@@ -50,6 +57,8 @@ typedef struct {
     double *tank_vmin, *tank_vmax;
     int *tank_pat, *tank_vcurve;
     int *tank_overflow;
+    double *tank_v0, *tank_v1frac, *tank_kb;
+    int *tank_mix;
     int *pump_link, *pump_type, *pump_hcurve;
     int *pump_ecurve;
     double *pump_h0, *pump_r, *pump_n, *pump_hmax, *pump_q0;
@@ -66,6 +75,7 @@ typedef struct {
     long long *control_time;
     int *control_enabled;
     double ucf_flow, ucf_head, ucf_volume;
+    double ucf_quality, ucf_elev;
 } OdinNetwork;
 
 typedef struct {
@@ -104,12 +114,27 @@ typedef struct {
     int (*check_rules)(void *, long long, long long);
 } OdinHooks;
 
+/* The quality engine's settings and state; segs is its own segment store. */
+typedef struct {
+    int kind, trace_node, reactive, out_of_memory;
+    double ctol, diffus, climit;
+    double bulk_order, wall_order, tank_order;
+    double sc, bucf, tucf;
+    double *node_qual, *tank_c, *link_rc, *pipe_rate, *source_mass;
+    int *flow_dir, *sorted;
+    double wbulk, wwall, wtank, wsource, source_qual;
+    double initial, inflow, outflow, reacted, final, ratio;
+    int seg_count;
+    void *segs;
+} OdinQuality;
+
 typedef struct {
     OdinNetwork *net;
     OdinHydraulics *hyd;
     OdinMatrix *m;
     Times *times; /* EPANET's own; Odin's Times matches its layout */
     OdinHooks *hooks;
+    OdinQuality *qual;
 } OdinProject;
 
 typedef struct {
@@ -141,6 +166,14 @@ double odin_tankgrade(OdinProject *, int i, double v);
 void odin_getenergy(OdinProject *, int k, double *kw, double *eff);
 void odin_getallpumpsenergy(OdinProject *);
 void odin_addenergy(OdinProject *, long long hstep);
+void *odin_quality_new(int nchains);
+void odin_quality_free(void *segs);
+void odin_initqual(OdinProject *);
+int odin_qual_newhydraulics(OdinProject *);
+void odin_transport(OdinProject *, long long dt);
+void odin_evalmassbalance(OdinProject *);
+double odin_avgqual(OdinProject *, int k);
+int odin_segments(void *segs, int k, double *v, double *c, int max);
 
 /* The originals, renamed at link time. */
 int linsolve_c(Smatrix *sm, int n);
@@ -163,6 +196,11 @@ double tankgrade_c(Project *pr, int i, double v);
 void getenergy_c(Project *pr, int k, double *kw, double *eff);
 void getallpumpsenergy_c(Project *pr);
 void addenergy_c(Project *pr, long hstep);
+int initqual_c(Project *pr);
+int runqual_c(Project *pr, long *t);
+int nextqual_c(Project *pr, long *tstep);
+int stepqual_c(Project *pr, long *tleft);
+double avgqual_c(Project *pr, int k);
 
 /* ── the mirror ──────────────────────────────────────────────────────── */
 
@@ -170,11 +208,13 @@ static OdinNetwork mir;
 static OdinHydraulics hydv;
 static OdinMatrix matv;
 static OdinHooks hooks;
-static OdinProject proj = {&mir, &hydv, &matv, NULL, &hooks};
+static OdinQuality qualv;
+static OdinProject proj = {&mir, &hydv, &matv, NULL, &hooks, &qualv};
 static int mir_nodes, mir_links, mir_tanks, mir_pumps, mir_valves, mir_controls,
-           mir_curves, mir_demands, mir_patterns = -1; /* -1: pattern 0 always exists */
+           mir_curves, mir_demands, mir_adj, mir_patterns = -1; /* -1: pattern 0 always exists */
 static double *leak_cfa, *leak_cva, *leak_qfa, *leak_qva, *tank_volume;
 static Senergy *energy;
+static double *source_mass, *tank_c, *link_rc;
 
 /* grow — (re)allocate a mirror array when the network got bigger. */
 static void *grow(void *p, int n, size_t size)
@@ -197,6 +237,14 @@ static OdinProject *enter(Project *pr)
         mir_nodes = net->Nnodes;
         m->el = grow(m->el, mir_nodes, sizeof(double));
         m->ke = grow(m->ke, mir_nodes, sizeof(double));
+        m->node_type = grow(m->node_type, mir_nodes, sizeof(int));
+        m->c0 = grow(m->c0, mir_nodes, sizeof(double));
+        m->has_source = grow(m->has_source, mir_nodes, sizeof(int));
+        m->source_type = grow(m->source_type, mir_nodes, sizeof(int));
+        m->source_pat = grow(m->source_pat, mir_nodes, sizeof(int));
+        m->source_c0 = grow(m->source_c0, mir_nodes, sizeof(double));
+        source_mass = grow(source_mass, mir_nodes, sizeof(double));
+        m->adj_first = grow(m->adj_first, mir_nodes + 1, sizeof(int));
         leak_cfa = grow(leak_cfa, mir_nodes, sizeof(double));
         leak_cva = grow(leak_cva, mir_nodes, sizeof(double));
         leak_qfa = grow(leak_qfa, mir_nodes, sizeof(double));
@@ -213,6 +261,9 @@ static OdinProject *enter(Project *pr)
         m->km = grow(m->km, mir_links, sizeof(double));
         m->kc = grow(m->kc, mir_links, sizeof(double));
         m->r = grow(m->r, mir_links, sizeof(double));
+        m->link_kb = grow(m->link_kb, mir_links, sizeof(double));
+        m->link_kw = grow(m->link_kw, mir_links, sizeof(double));
+        link_rc = grow(link_rc, mir_links, sizeof(double));
         m->link_pump = grow(m->link_pump, mir_links, sizeof(int));
         m->link_valve = grow(m->link_valve, mir_links, sizeof(int));
         m->init_status = grow(m->init_status, mir_links, sizeof(int));
@@ -229,7 +280,12 @@ static OdinProject *enter(Project *pr)
         m->tank_pat = grow(m->tank_pat, mir_tanks, sizeof(int));
         m->tank_vcurve = grow(m->tank_vcurve, mir_tanks, sizeof(int));
         m->tank_overflow = grow(m->tank_overflow, mir_tanks, sizeof(int));
+        m->tank_v0 = grow(m->tank_v0, mir_tanks, sizeof(double));
+        m->tank_v1frac = grow(m->tank_v1frac, mir_tanks, sizeof(double));
+        m->tank_kb = grow(m->tank_kb, mir_tanks, sizeof(double));
+        m->tank_mix = grow(m->tank_mix, mir_tanks, sizeof(int));
         tank_volume = grow(tank_volume, mir_tanks, sizeof(double));
+        tank_c = grow(tank_c, mir_tanks, sizeof(double));
     }
     if (net->Npumps > mir_pumps) {
         mir_pumps = net->Npumps;
@@ -290,9 +346,44 @@ static OdinProject *enter(Project *pr)
     nd = 0;
     for (i = 1; i <= net->Nnodes; i++) {
         Pdemand d;
+        Psource src = net->Node[i].S;
         m->el[i] = net->Node[i].El;
         m->ke[i] = net->Node[i].Ke;
+        m->node_type[i] = net->Node[i].Type;
+        m->c0[i] = net->Node[i].C0;
+        m->has_source[i] = src != NULL;
+        m->source_type[i] = src ? src->Type : 0;
+        m->source_pat[i] = src ? src->Pat : 0;
+        m->source_c0[i] = src ? src->C0 : 0.0;
+        source_mass[i] = src ? src->Smass : 0.0;
         leak_cfa[i] = leak_cva[i] = leak_qfa[i] = leak_qva[i] = 0.0;
+        for (d = net->Node[i].D; d; d = d->next) nd++;
+    }
+    /* The adjacency lists flattened, in list order. */
+    nd = 0;
+    if (net->Adjlist) for (i = 1; i <= net->Nnodes; i++) {
+        Padjlist a;
+        for (a = net->Adjlist[i]; a; a = a->next) nd++;
+    }
+    if (nd > mir_adj) {
+        mir_adj = nd;
+        m->adj_link = grow(m->adj_link, mir_adj, sizeof(int));
+        m->adj_node = grow(m->adj_node, mir_adj, sizeof(int));
+    }
+    m->nadj = nd;
+    nd = 1;
+    for (i = 1; i <= net->Nnodes; i++) {
+        Padjlist a;
+        m->adj_first[i] = nd;
+        if (net->Adjlist) for (a = net->Adjlist[i]; a; a = a->next, nd++) {
+            m->adj_link[nd] = a->link;
+            m->adj_node[nd] = a->node;
+        }
+    }
+    m->adj_first[net->Nnodes + 1] = nd;
+    nd = 0;
+    for (i = 1; i <= net->Nnodes; i++) {
+        Pdemand d;
         for (d = net->Node[i].D; d; d = d->next) nd++;
     }
     if (nd > mir_demands) {
@@ -330,6 +421,9 @@ static OdinProject *enter(Project *pr)
         m->km[k] = l->Km;
         m->kc[k] = l->Kc;
         m->r[k] = l->R;
+        m->link_kb[k] = l->Kb;
+        m->link_kw[k] = l->Kw;
+        link_rc[k] = l->Rc;
         m->link_pump[k] = 0;
         m->link_valve[k] = 0;
         m->init_status[k] = l->InitStatus;
@@ -346,7 +440,12 @@ static OdinProject *enter(Project *pr)
         m->tank_pat[i] = t->Pat;
         m->tank_vcurve[i] = t->Vcurve;
         m->tank_overflow[i] = t->CanOverflow;
+        m->tank_v0[i] = t->V0;
+        m->tank_v1frac[i] = t->V1frac;
+        m->tank_kb[i] = t->Kb;
+        m->tank_mix[i] = t->MixModel;
         tank_volume[i] = t->V;
+        tank_c[i] = t->C;
     }
     for (i = 1; i <= net->Npumps; i++) {
         Spump *p = &net->Pump[i];
@@ -394,6 +493,46 @@ static OdinProject *enter(Project *pr)
     m->ucf_flow = pr->Ucf[FLOW];
     m->ucf_head = pr->Ucf[HEAD];
     m->ucf_volume = pr->Ucf[VOLUME];
+    m->ucf_quality = pr->Ucf[QUALITY];
+    m->ucf_elev = pr->Ucf[ELEV];
+
+    /* The quality engine's settings and state (its segments are its own). */
+    {
+        Quality *q = &pr->quality;
+        qualv.kind = q->Qualflag;
+        qualv.trace_node = q->TraceNode;
+        qualv.reactive = q->Reactflag;
+        qualv.out_of_memory = q->OutOfMemory;
+        qualv.ctol = q->Ctol;
+        qualv.diffus = q->Diffus;
+        qualv.climit = q->Climit;
+        qualv.bulk_order = q->BulkOrder;
+        qualv.wall_order = q->WallOrder;
+        qualv.tank_order = q->TankOrder;
+        qualv.sc = q->Sc;
+        qualv.bucf = q->Bucf;
+        qualv.tucf = q->Tucf;
+        qualv.node_qual = q->NodeQual;
+        qualv.tank_c = tank_c;
+        qualv.link_rc = link_rc;
+        qualv.pipe_rate = q->PipeRateCoeff;
+        qualv.source_mass = source_mass;
+        qualv.flow_dir = (int *)q->FlowDir;
+        qualv.sorted = q->SortedNodes;
+        qualv.wbulk = q->Wbulk;
+        qualv.wwall = q->Wwall;
+        qualv.wtank = q->Wtank;
+        qualv.wsource = q->Wsource;
+        qualv.source_qual = q->SourceQual;
+        qualv.initial = q->MassBalance.initial;
+        qualv.inflow = q->MassBalance.inflow;
+        qualv.outflow = q->MassBalance.outflow;
+        qualv.reacted = q->MassBalance.reacted;
+        qualv.final = q->MassBalance.final;
+        qualv.ratio = q->MassBalance.ratio;
+        qualv.seg_count = q->MassBalance.segCount;
+        /* qualv.segs is set by initqual */
+    }
 
     /* The hydraulic state: EPANET's arrays, in place. */
     hydv.formflag = hyd->Formflag;
@@ -483,6 +622,29 @@ static void leave(Project *pr)
     }
     hyd->Dsystem = hydv.dsystem;
     hyd->Emax = hydv.emax;
+    {
+        Quality *q = &pr->quality;
+        for (i = 1; i <= net->Nnodes; i++) if (net->Node[i].S) net->Node[i].S->Smass = source_mass[i];
+        for (i = 1; i <= net->Nlinks; i++) net->Link[i].Rc = link_rc[i];
+        for (i = 1; i <= net->Ntanks; i++) net->Tank[i].C = tank_c[i];
+        q->Reactflag = qualv.reactive;
+        q->OutOfMemory = qualv.out_of_memory;
+        q->Sc = qualv.sc;
+        q->Bucf = qualv.bucf;
+        q->Tucf = qualv.tucf;
+        q->Wbulk = qualv.wbulk;
+        q->Wwall = qualv.wwall;
+        q->Wtank = qualv.wtank;
+        q->Wsource = qualv.wsource;
+        q->SourceQual = qualv.source_qual;
+        q->MassBalance.initial = qualv.initial;
+        q->MassBalance.inflow = qualv.inflow;
+        q->MassBalance.outflow = qualv.outflow;
+        q->MassBalance.reacted = qualv.reacted;
+        q->MassBalance.final = qualv.final;
+        q->MassBalance.ratio = qualv.ratio;
+        q->MassBalance.segCount = qualv.seg_count;
+    }
 }
 
 /* ── the hooks: each one is the EPANET function of the same purpose ─── */
@@ -655,6 +817,140 @@ static void getenergy_odin(Project *pr, int k, double *kw, double *eff) { odin_g
 static void getallpumpsenergy_odin(Project *pr) { odin_getallpumpsenergy(enter(pr)); leave(pr); }
 static void addenergy_odin(Project *pr, long hstep) { odin_addenergy(enter(pr), hstep); leave(pr); }
 
+/* ── water quality: the orchestration of quality.c with the engine from
+ * Odin. The segment store is the engine's; C's stays empty. ───────────── */
+
+static int initqual_odin(Project *pr)
+{
+    Network *net = &pr->network;
+    Times *time = &pr->times;
+    if (!pr->hydraul.OpenHflag) fseek(pr->outfile.HydFile, pr->outfile.HydOffset, SEEK_SET);
+    time->Qtime = 0;
+    time->Htime = 0;
+    time->Rtime = time->Rstart;
+    pr->report.Nperiods = 0;
+    if (qualv.segs) odin_quality_free(qualv.segs);
+    qualv.segs = odin_quality_new(net->Nlinks + net->Ntanks);
+    odin_initqual(enter(pr));
+    leave(pr);
+    return 0;
+}
+
+static int runqual_odin(Project *pr, long *t)
+{
+    Hydraul *hyd = &pr->hydraul;
+    Quality *qual = &pr->quality;
+    Times *time = &pr->times;
+    long hydtime = 0, hydstep = 0;
+    int errcode = 0;
+
+    *t = time->Qtime;
+    if (time->Qtime == time->Htime) {
+        if (!hyd->OpenHflag) {
+            if (!readhyd(pr, &hydtime)) return 307;
+            if (!readhydstep(pr, &hydstep)) return 307;
+            time->Htime = hydtime;
+        }
+        if (time->Htime >= time->Rtime) {
+            if (pr->outfile.Saveflag) {
+                errcode = saveoutput(pr);
+                pr->report.Nperiods++;
+            }
+            time->Rtime += time->Rstep;
+        }
+        if (errcode) return errcode;
+        if (qual->Qualflag != NONE && time->Qtime < time->Dur) {
+            errcode = odin_qual_newhydraulics(enter(pr));
+            leave(pr);
+        }
+        if (!hyd->OpenHflag) time->Htime = hydtime + hydstep;
+    }
+    return errcode;
+}
+
+static void transport_odin(Project *pr, long dt)
+{
+    odin_transport(enter(pr), dt);
+    leave(pr);
+}
+
+static void evalmassbalance_odin(Project *pr)
+{
+    odin_evalmassbalance(enter(pr));
+    leave(pr);
+}
+
+static int nextqual_odin(Project *pr, long *tstep)
+{
+    Quality *qual = &pr->quality;
+    Times *time = &pr->times;
+    long hydstep = 0, dt, qtime;
+    int errcode = 0;
+
+    *tstep = 0;
+    if (time->Htime <= time->Dur) hydstep = time->Htime - time->Qtime;
+    if (qual->Qualflag != NONE && hydstep > 0) {
+        qtime = 0;
+        while (!qual->OutOfMemory && qtime < hydstep) {
+            dt = MIN(time->Qstep, hydstep - qtime);
+            qtime += dt;
+            transport_odin(pr, dt);
+        }
+        if (qual->OutOfMemory) errcode = 101;
+    }
+    evalmassbalance_odin(pr);
+    if (!errcode) *tstep = hydstep;
+    time->Qtime += hydstep;
+    if (!errcode && *tstep == 0) {
+        if (qual->Qualflag != NONE && pr->report.Statflag) writemassbalance(pr);
+        if (pr->outfile.Saveflag) errcode = savefinaloutput(pr);
+    }
+    return errcode;
+}
+
+static int stepqual_odin(Project *pr, long *tleft)
+{
+    Quality *qual = &pr->quality;
+    Times *time = &pr->times;
+    long dt, hstep, t, tstep;
+    int errcode = 0;
+
+    tstep = time->Qstep;
+    do {
+        dt = tstep;
+        hstep = time->Htime - time->Qtime;
+        if (hstep < dt) {
+            dt = hstep;
+            if (qual->Qualflag != NONE) transport_odin(pr, dt);
+            time->Qtime += dt;
+            if (pr->hydraul.OpenHflag) break;
+            errcode = runqual_odin(pr, &t);
+            time->Qtime = t;
+        } else {
+            if (qual->Qualflag != NONE) transport_odin(pr, dt);
+            time->Qtime += dt;
+        }
+        tstep -= dt;
+        if (qual->OutOfMemory) errcode = 101;
+    } while (!errcode && tstep > 0);
+    evalmassbalance_odin(pr);
+    *tleft = time->Dur - time->Qtime;
+    if (!errcode && *tleft == 0) {
+        if (qual->Qualflag != NONE && pr->report.Statflag) writemassbalance(pr);
+        if (pr->outfile.Saveflag) errcode = savefinaloutput(pr);
+    }
+    return errcode;
+}
+
+static double avgqual_odin(Project *pr, int k)
+{
+    double c;
+    if (pr->quality.Qualflag == NONE || !qualv.segs) return 0.0;
+    c = odin_avgqual(enter(pr), k);
+    leave(pr);
+    return c;
+}
+
 #ifndef SHADOW
 
 int linsolve(Smatrix *sm, int n) { return linsolve_odin(sm, n); }
@@ -677,6 +973,11 @@ double tankgrade(Project *pr, int i, double v) { return tankgrade_odin(pr, i, v)
 void getenergy(Project *pr, int k, double *kw, double *eff) { getenergy_odin(pr, k, kw, eff); }
 void getallpumpsenergy(Project *pr) { getallpumpsenergy_odin(pr); }
 void addenergy(Project *pr, long hstep) { addenergy_odin(pr, hstep); }
+int initqual(Project *pr) { return initqual_odin(pr); }
+int runqual(Project *pr, long *t) { return runqual_odin(pr, t); }
+int nextqual(Project *pr, long *tstep) { return nextqual_odin(pr, tstep); }
+int stepqual(Project *pr, long *tleft) { return stepqual_odin(pr, tleft); }
+double avgqual(Project *pr, int k) { return avgqual_odin(pr, k); }
 
 #else /* SHADOW */
 
@@ -694,12 +995,14 @@ SHADOW(hydsolve) SHADOW(resistcoeff) SHADOW(pcvlosscoeff) SHADOW(initlinkflow)
 SHADOW(resetpumpflow) SHADOW(setlinkstatus) SHADOW(setlinksetting) SHADOW(demands)
 SHADOW(controls) SHADOW(timestep) SHADOW(tanklevels) SHADOW(tankvolume) SHADOW(tankgrade)
 SHADOW(getenergy) SHADOW(getallpumpsenergy) SHADOW(addenergy)
+SHADOW(initqual) SHADOW(runqual) SHADOW(nextqual) SHADOW(stepqual) SHADOW(avgqual)
 static Shadow *shadows[] = {
     &shadow_linsolve, &shadow_createsparse, &shadow_headlosscoeffs, &shadow_matrixcoeffs,
     &shadow_hydsolve, &shadow_resistcoeff, &shadow_pcvlosscoeff, &shadow_initlinkflow,
     &shadow_resetpumpflow, &shadow_setlinkstatus, &shadow_setlinksetting, &shadow_demands,
     &shadow_controls, &shadow_timestep, &shadow_tanklevels, &shadow_tankvolume, &shadow_tankgrade,
-    &shadow_getenergy, &shadow_getallpumpsenergy, &shadow_addenergy};
+    &shadow_getenergy, &shadow_getallpumpsenergy, &shadow_addenergy,
+    &shadow_initqual, &shadow_runqual, &shadow_nextqual, &shadow_stepqual, &shadow_avgqual};
 static int shadow_registered;
 
 static void shadow_report(void)
@@ -753,14 +1056,16 @@ typedef struct {
     const char *name;
     void *live;
     void *copy;
-    int n, is_int;
+    int n, is_int; /* is_int: 0 doubles, 1 ints, 2 longs */
 } Arr;
 
 typedef struct {
     Arr *a;
     int n, cap;
-    double scalars[16];
+    double scalars[40];
 } Snapshot;
+
+static size_t elem_size(int kind) { return kind == 1 ? sizeof(int) : kind == 2 ? sizeof(long) : sizeof(double); }
 
 static void snap_add(Snapshot *s, const char *name, void *live, int n, int is_int)
 {
@@ -772,7 +1077,7 @@ static void snap_add(Snapshot *s, const char *name, void *live, int n, int is_in
     }
     a = &s->a[s->n++];
     a->name = name; a->live = live; a->n = n; a->is_int = is_int;
-    a->copy = malloc((n + 1) * (is_int ? sizeof(int) : sizeof(double)));
+    a->copy = malloc((n + 1) * elem_size(is_int));
 }
 
 static void snap_setup(Snapshot *s, Project *pr)
@@ -788,15 +1093,27 @@ static void snap_setup(Snapshot *s, Project *pr)
     snap_add(s, "DemandFlow", hyd->DemandFlow, nn, 0);
     snap_add(s, "EmitterFlow", hyd->EmitterFlow, nn, 0);
     snap_add(s, "LeakageFlow", hyd->LeakageFlow, nn, 0);
-    snap_add(s, "Xflow", hyd->Xflow, nn, 0);
     snap_add(s, "LinkFlow", hyd->LinkFlow, nl, 0);
     snap_add(s, "LinkSetting", hyd->LinkSetting, nl, 0);
-    snap_add(s, "P", hyd->P, nl, 0);
-    snap_add(s, "Y", hyd->Y, nl, 0);
-    snap_add(s, "Aii", sm->Aii, nn, 0);
-    snap_add(s, "Aij", sm->Aij, sm->Ncoeffs, 0);
-    snap_add(s, "F", sm->F, nn, 0);
     snap_add(s, "LinkStatus", hyd->LinkStatus, nl, 1);
+    /* The solver's work arrays exist only while hydraulics are open. */
+    if (hyd->OpenHflag) {
+        snap_add(s, "Xflow", hyd->Xflow, nn, 0);
+        snap_add(s, "P", hyd->P, nl, 0);
+        snap_add(s, "Y", hyd->Y, nl, 0);
+        snap_add(s, "Aii", sm->Aii, nn, 0);
+        snap_add(s, "Aij", sm->Aij, sm->Ncoeffs, 0);
+        snap_add(s, "F", sm->F, nn, 0);
+    }
+    /* The scalar blocks of the hydraulics and quality structs, as ranges
+     * (types.h lays each out as a run of doubles and a run of ints). */
+    snap_add(s, "Hydraul.d", &hyd->Htol, (int)(&hyd->RelaxFactor - &hyd->Htol), 0);
+    snap_add(s, "Hydraul.i", &hyd->DefPat, (int)(&hyd->HasLeakage - &hyd->DefPat), 1);
+    snap_add(s, "Quality.d", &pr->quality.Ctol, (int)(&pr->quality.SourceQual - &pr->quality.Ctol), 0);
+    snap_add(s, "Quality.i", &pr->quality.Qualflag, (int)(&pr->quality.TraceNode - &pr->quality.Qualflag), 1);
+    snap_add(s, "MassBalance.d", &pr->quality.MassBalance.initial, 5, 0);
+    snap_add(s, "MassBalance.segCount", &pr->quality.MassBalance.segCount, 0, 1);
+    snap_add(s, "Nperiods", &pr->report.Nperiods, 0, 1);
     for (i = 1; i <= net->Npumps; i++) {
         snap_add(s, "Pump.H0", &net->Pump[i].H0, 0, 0);
         snap_add(s, "Pump.R", &net->Pump[i].R, 0, 0);
@@ -807,6 +1124,15 @@ static void snap_setup(Snapshot *s, Project *pr)
     for (i = 1; i <= nl; i++) snap_add(s, "Link.R", &net->Link[i].R, 0, 0);
     if (hyd->Leakage)
         snap_add(s, "Leakage", hyd->Leakage, (net->Njuncs + 1) * (int)(sizeof(Sleakage) / sizeof(double)) - 1, 0);
+    /* The quality engine's shared state (its segments are compared apart). */
+    snap_add(s, "NodeQual", pr->quality.NodeQual, nn, 0);
+    snap_add(s, "PipeRateCoeff", pr->quality.PipeRateCoeff, nl, 0);
+    snap_add(s, "FlowDir", pr->quality.FlowDir, nl, 1);
+    snap_add(s, "SortedNodes", pr->quality.SortedNodes, nn, 1);
+    for (i = 1; i <= net->Ntanks; i++) snap_add(s, "Tank.C", &net->Tank[i].C, 0, 0);
+    for (i = 1; i <= nl; i++) snap_add(s, "Link.Rc", &net->Link[i].Rc, 0, 0);
+    for (i = 1; i <= nn; i++) if (net->Node[i].S) snap_add(s, "Smass", &net->Node[i].S->Smass, 0, 0);
+    snap_add(s, "Times", &pr->times, (int)(sizeof(Times) / sizeof(long)) - 1, 2);
 }
 
 static void snap_take(Snapshot *s)
@@ -814,7 +1140,7 @@ static void snap_take(Snapshot *s)
     int k;
     for (k = 0; k < s->n; k++) {
         Arr *a = &s->a[k];
-        memcpy(a->copy, a->live, (a->n + 1) * (a->is_int ? sizeof(int) : sizeof(double)));
+        memcpy(a->copy, a->live, (a->n + 1) * elem_size(a->is_int));
     }
 }
 
@@ -823,47 +1149,58 @@ static void snap_put(Snapshot *s)
     int k;
     for (k = 0; k < s->n; k++) {
         Arr *a = &s->a[k];
-        memcpy(a->live, a->copy, (a->n + 1) * (a->is_int ? sizeof(int) : sizeof(double)));
+        memcpy(a->live, a->copy, (a->n + 1) * elem_size(a->is_int));
     }
 }
-
-static void snap_scalars(Snapshot *s, Project *pr)
-{
-    Hydraul *hyd = &pr->hydraul;
-    double *v = s->scalars;
-    v[0] = hyd->RelaxFactor;
-    v[1] = hyd->RelativeError;
-    v[2] = hyd->MaxHeadError;
-    v[3] = hyd->MaxFlowChange;
-    v[4] = hyd->Iterations;
-    v[5] = hyd->DeficientNodes;
-    v[6] = hyd->DemandReduction;
-    v[7] = hyd->Dsystem;
-    v[8] = hyd->Emax;
-    v[9] = (double)pr->times.Htime;
-}
-
-static const char *scalar_names[] = {"RelaxFactor", "RelativeError", "MaxHeadError", "MaxFlowChange",
-    "Iterations", "DeficientNodes", "DemandReduction", "Dsystem", "Emax", "Htime"};
 
 /* snap_check — compare a snapshot (the C result) with the live project
  * (the Odin result). */
 static void snap_check(Shadow *sh, Snapshot *c, Project *pr)
 {
     int k, i;
-    double live[16];
-    Snapshot now = *c;
+    (void)pr;
     for (k = 0; k < c->n; k++) {
         Arr *a = &c->a[k];
-        for (i = (a->n ? 1 : 0); i <= a->n; i++) {
-            if (a->is_int) compare(sh, a->name, i, ((int *)a->copy)[i], ((int *)a->live)[i]);
+        for (i = 0; i <= a->n; i++) {
+            if (a->is_int == 1) compare(sh, a->name, i, ((int *)a->copy)[i], ((int *)a->live)[i]);
+            else if (a->is_int == 2) compare(sh, a->name, i, (double)((long *)a->copy)[i], (double)((long *)a->live)[i]);
             else compare(sh, a->name, i, ((double *)a->copy)[i], ((double *)a->live)[i]);
         }
     }
-    now.scalars[0] = 0;
-    snap_scalars(&now, pr);
-    memcpy(live, now.scalars, sizeof live);
-    for (k = 0; k < 10; k++) compare(sh, scalar_names[k], 0, c->scalars[k], live[k]);
+}
+
+/* compare_segments — chain by chain, C's linked list against the Odin
+ * store, segment by segment. Only meaningful after both initquals ran. */
+static void compare_segments(Shadow *sh, Project *pr)
+{
+    Network *net = &pr->network;
+    Quality *q = &pr->quality;
+    int k, nchains = net->Nlinks + net->Ntanks, cap = 1024;
+    double *v = malloc(cap * sizeof(double)), *c = malloc(cap * sizeof(double));
+    if (q->Qualflag == NONE || !q->FirstSeg || !qualv.segs) { free(v); free(c); return; }
+    for (k = 1; k <= nchains; k++) {
+        Pseg seg;
+        int n, i = 0;
+        n = odin_segments(qualv.segs, k, v, c, cap);
+        for (seg = q->FirstSeg[k]; seg; seg = seg->prev, i++) {
+            if (i >= n) { compare(sh, "seg.count", k, i + 1, n); break; }
+            compare(sh, "seg.v", k, seg->v, v[i]);
+            compare(sh, "seg.c", k, seg->c, c[i]);
+        }
+        if (i < n && i < cap) compare(sh, "seg.count", k, i, n);
+    }
+    free(v);
+    free(c);
+}
+
+/* The hydraulics file is read by runqual: its position is state too. */
+static long hydfile_pos(Project *pr)
+{
+    return pr->outfile.HydFile && !pr->hydraul.OpenHflag ? ftell(pr->outfile.HydFile) : 0;
+}
+static void hydfile_seek(Project *pr, long pos)
+{
+    if (pr->outfile.HydFile && !pr->hydraul.OpenHflag) fseek(pr->outfile.HydFile, pos, SEEK_SET);
 }
 
 static void snap_free(Snapshot *s)
@@ -883,7 +1220,7 @@ static void snap_free(Snapshot *s)
 #define SHADOW_BEGIN(sym) \
     Shadow *sh_ = &shadow_##sym; Snapshot before_, after_; \
     shadow_begin(sh_); snap_setup(&before_, pr); snap_setup(&after_, pr); snap_take(&before_)
-#define SHADOW_MID() snap_take(&after_); snap_scalars(&after_, pr); snap_put(&before_)
+#define SHADOW_MID() snap_take(&after_); snap_put(&before_)
 #define SHADOW_END() snap_check(sh_, &after_, pr); snap_free(&before_); snap_free(&after_)
 
 int linsolve(Smatrix *sm, int n)
@@ -1151,6 +1488,84 @@ void addenergy(Project *pr, long hstep)
     SHADOW_MID();
     addenergy_odin(pr, hstep);
     SHADOW_END();
+}
+
+int initqual(Project *pr)
+{
+    int c, o;
+    SHADOW_BEGIN(initqual);
+    c = initqual_c(pr);
+    SHADOW_MID();
+    o = initqual_odin(pr);
+    SHADOW_END();
+    compare(sh_, "return", 0, c, o);
+    compare_segments(sh_, pr);
+    return o;
+}
+
+int runqual(Project *pr, long *t)
+{
+    int c, o;
+    long t_c, pos0, pos_c;
+    SHADOW_BEGIN(runqual);
+    pos0 = hydfile_pos(pr);
+    c = runqual_c(pr, &t_c);
+    pos_c = hydfile_pos(pr);
+    SHADOW_MID();
+    hydfile_seek(pr, pos0);
+    o = runqual_odin(pr, t);
+    SHADOW_END();
+    compare(sh_, "return", 0, c, o);
+    compare(sh_, "t", 0, (double)t_c, (double)*t);
+    compare(sh_, "hydfile", 0, (double)pos_c, (double)hydfile_pos(pr));
+    compare_segments(sh_, pr);
+    return o;
+}
+
+int nextqual(Project *pr, long *tstep)
+{
+    int c, o;
+    long ts_c;
+    SHADOW_BEGIN(nextqual);
+    c = nextqual_c(pr, &ts_c);
+    SHADOW_MID();
+    o = nextqual_odin(pr, tstep);
+    SHADOW_END();
+    compare(sh_, "return", 0, c, o);
+    compare(sh_, "tstep", 0, (double)ts_c, (double)*tstep);
+    compare_segments(sh_, pr);
+    return o;
+}
+
+int stepqual(Project *pr, long *tleft)
+{
+    int c, o;
+    long tl_c, pos0, pos_c;
+    SHADOW_BEGIN(stepqual);
+    pos0 = hydfile_pos(pr);
+    c = stepqual_c(pr, &tl_c);
+    pos_c = hydfile_pos(pr);
+    SHADOW_MID();
+    hydfile_seek(pr, pos0);
+    o = stepqual_odin(pr, tleft);
+    SHADOW_END();
+    compare(sh_, "return", 0, c, o);
+    compare(sh_, "tleft", 0, (double)tl_c, (double)*tleft);
+    compare(sh_, "hydfile", 0, (double)pos_c, (double)hydfile_pos(pr));
+    compare_segments(sh_, pr);
+    return o;
+}
+
+double avgqual(Project *pr, int k)
+{
+    double c, o;
+    SHADOW_BEGIN(avgqual);
+    c = avgqual_c(pr, k);
+    SHADOW_MID();
+    o = avgqual_odin(pr, k);
+    SHADOW_END();
+    compare(sh_, "return", k, c, o);
+    return o;
 }
 
 #endif /* SHADOW */
