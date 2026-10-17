@@ -8,7 +8,7 @@
 #   SWAP_FILES="" harness/test.sh          ...and the report and file writers
 #   ODIN=/opt/odin/odin harness/test.sh    where the compiler is (default: PATH)
 #   EPANET=../EPANET harness/test.sh       an EPANET checkout to build from
-#                                          (default: ./EPANET, cloned on demand)
+#                                          (default: ./epanet-c, cloned on demand)
 #   FIXTURES="a.inp b.inp" harness/test.sh       just those networks
 #   EXTRA_FIXTURES="c.inp" harness/test.sh       the usual set plus those
 #   ASAN=1 harness/test.sh     every binary under AddressSanitizer (both
@@ -38,7 +38,7 @@ SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve resistc
 # The report and the files: swapped, not shadowed (their result is the file).
 SWAP_FILES=${SWAP_FILES:-"writeline writelogo clearreport writesummary writehydstat writeflowbalance writemassbalance writereport writeheader writerelerr writestatchange writecontrolaction writeruleaction writehydwarn writehyderr writetime errmsg savenetdata savehyd savehydstep saveenergy readhyd readhydstep saveoutput savefinaloutput openhydfile openoutfile closeoutfile freedata"}
 TOL=${TOL:-1e-9}
-EP=${EPANET:-EPANET}
+EP=${EPANET:-epanet-c}
 EPANET_COMMIT=444725fbf16ab28b0470ef0ed281dc4849d49583   # OWA EPANET 2.3 dev
 B=build
 CC=${CC:-clang}

@@ -5,7 +5,7 @@
 #   ./package.sh v0.1.0 linux-amd64 -v    name each step
 #   ODIN=/opt/odin/odin ./package.sh …    where the compiler is (default: PATH)
 #   EPANET=../EPANET ./package.sh …       an EPANET checkout, for the headers
-#                                         (default: ./EPANET, cloned on demand)
+#                                         (default: ./epanet-c, cloned on demand)
 #
 # What goes in:
 #   lib/libepanet-api.a    EN_* with the C ABI over the Odin engine — links
@@ -36,7 +36,7 @@ platform=${args[1]}
 
 ODIN=${ODIN:-odin}
 CC=${CC:-clang}
-EP=${EPANET:-EPANET}
+EP=${EPANET:-epanet-c}
 EPANET_COMMIT=444725fbf16ab28b0470ef0ed281dc4849d49583   # OWA EPANET 2.3 dev
 B=build
 name="epanet-odin-$version-$platform"

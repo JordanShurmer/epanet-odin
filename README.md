@@ -10,7 +10,7 @@ harness/test.sh            # build c / odin / shadow, run every fixture
 harness/test.sh -v         # name every check
 ```
 
-The first run clones EPANET at the pinned commit into `EPANET/` (or point
+The first run clones EPANET at the pinned commit into `epanet-c/` (or point
 `EPANET=` at a checkout). Needs an Odin compiler (`ODIN=` if not on PATH),
 clang, binutils.
 
@@ -60,13 +60,14 @@ package.sh      builds lib/, include/ and bin/ and tars them up for a release
 .github/workflows/
   ci.yml          the harness, on every push and pull request
   release.yml     a v* tag: the harness, package.sh per platform, the release
-EPANET/         OWA EPANET, cloned on demand (gitignored)
+epanet-c/       OWA EPANET, cloned on demand (gitignored; not `EPANET/`, which
+                is `epanet/` on a case-insensitive disk)
 build/          scratch (gitignored)
 ```
 
 ## How a piece is plugged in
 
-EPANET's source is never edited. `harness/test.sh` compiles `EPANET/src` to
+EPANET's source is never edited. `harness/test.sh` compiles `epanet-c/src` to
 objects. Every object that defines a symbol in `SWAP` then goes into the
 build twice: a `_c` copy with every swapped symbol renamed (`objcopy
 --redefine-sym linsolve=linsolve_c`, definitions and calls alike, the rest
