@@ -269,6 +269,9 @@ The Odin package is not in it: an Odin program takes `epanet/` as source.
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
+Or run `release` from the Actions tab with the version to tag: it tags the
+commit it ran on as it publishes.
+
 ## License
 
 MIT, like EPANET itself (see `LICENSE`).

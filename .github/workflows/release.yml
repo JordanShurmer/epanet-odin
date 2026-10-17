@@ -1,15 +1,23 @@
 # release.yml — a v* tag becomes a GitHub release: the harness proves the
 # engine on Linux, package.sh builds one tarball per platform, and the last
-# job publishes them. See package.sh for what a tarball holds.
+# job publishes them. See package.sh for what a tarball holds. Run by hand
+# from the Actions tab (with the version to tag), it tags the commit it ran
+# on as it publishes.
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 name: release
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: the tag to make at this commit, vX.Y.Z
+        required: true
 
 env:
   ODIN_RELEASE: dev-2026-10   # the compiler, from github.com/odin-lang/Odin/releases
+  VERSION: ${{ inputs.version || github.ref_name }}
 
 jobs:
   build:
@@ -33,7 +41,7 @@ jobs:
         if: matrix.platform == 'linux-amd64'   # the plug-in build needs GNU objcopy
         run: harness/test.sh
       - name: package
-        run: ./package.sh "$GITHUB_REF_NAME" "${{ matrix.platform }}"
+        run: ./package.sh "$VERSION" "${{ matrix.platform }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}
@@ -50,6 +58,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+      - run: gh release create "$VERSION" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$VERSION" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
