@@ -245,7 +245,7 @@ controls :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hook
 // timestep: how long until something changes — the next pattern period,
 // report time, a tank filling or emptying, a control, or a rule — and
 // moves the tanks to the levels they will have then.
-timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, nrules: int) -> i64 {
+timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, nrules: int) -> i64 {
 	tstep := t.hstep
 	n := (t.htime + t.pstart) / t.pstep + 1
 	dt := n * t.pstep - t.htime
@@ -333,7 +333,7 @@ control_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Tim
 
 // rule_timestep walks the clock forward in rule-evaluation steps, moving
 // the tanks as it goes, until a rule fires or tstep is used up.
-rule_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, tstep: ^i64) {
+rule_timestep :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks, tstep: ^i64) {
 	tnow := t.htime
 	tmax := tnow + tstep^
 	dt := t.rulestep
@@ -345,7 +345,11 @@ rule_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times,
 	for {
 		htime += dt1
 		tank_levels(net, hyd, dt1)
-		if hooks.check_rules(hooks.ctx, htime, dt1) do break
+		// The rules see the clock at the end of the increment.
+		t.htime = htime
+		fired := check_rules(net, hyd, t, hooks, dt1) > 0
+		t.htime = tnow
+		if fired do break
 		dt = min(dt, tmax - htime)
 		dt1 = dt
 		if dt <= 0 do break
@@ -463,4 +467,197 @@ add_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hs
 		en.total_cost += c * p * dt
 	}
 	hyd.emax = max(hyd.emax, psum)
+}
+
+// ── the flow balance ──────────────────────────────────────────────────
+
+start_flow_balance :: proc "contextless" (hyd: ^Hydraulics) {
+	hyd.flow_balance^ = {}
+}
+
+// update_flow_balance adds this period's flows, weighted by its length.
+update_flow_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hstep: i64) {
+	dt: f64
+	if t.dur == 0 {
+		dt = 1
+	} else if t.htime < t.dur {
+		dt = f64(hstep)
+	} else {
+		return
+	}
+	fb: Flow_Balance
+	full_demand := 0.0
+	hyd.leakage_loss = 0
+	for i in 1 ..= net.njuncs {
+		v := hyd.demand_flow[i]
+		if v < 0 {
+			fb.total_inflow += (-v)
+		} else {
+			full_demand += hyd.full_demand[i]
+			fb.consumer_demand += v
+			fb.total_outflow += v
+		}
+		v = hyd.emitter_flow[i]
+		fb.emitter_demand += v
+		fb.total_outflow += v
+		v = hyd.leak_flow[i]
+		fb.leakage_demand += v
+		fb.total_outflow += v
+		if hyd.demand_model == .PDA && hyd.full_demand[i] > 0 {
+			deficit := hyd.full_demand[i] - hyd.demand_flow[i]
+			if deficit > 0 do fb.deficit_demand += deficit
+		}
+	}
+	for j in 1 ..= net.ntanks {
+		v := hyd.node_demand[net.tank_node[j]]
+		if net.tank_area[j] == 0 {
+			if v >= 0 {
+				fb.total_outflow += v
+			} else {
+				fb.total_inflow += (-v)
+			}
+		} else {
+			fb.storage_demand += v
+		}
+	}
+	v := fb.total_inflow
+	if fb.storage_demand < 0 do v += (-fb.storage_demand)
+	if v > 0 do hyd.leakage_loss = fb.leakage_demand / v * 100
+	b := hyd.flow_balance
+	b.total_inflow += fb.total_inflow * dt
+	b.total_outflow += fb.total_outflow * dt
+	b.consumer_demand += fb.consumer_demand * dt
+	b.emitter_demand += fb.emitter_demand * dt
+	b.leakage_demand += fb.leakage_demand * dt
+	b.deficit_demand += fb.deficit_demand * dt
+	b.storage_demand += fb.storage_demand * dt
+}
+
+// end_flow_balance turns the totals into averages and a ratio out/in.
+end_flow_balance :: proc "contextless" (hyd: ^Hydraulics, t: ^Times) {
+	seconds := t.htime > 0 ? f64(t.htime) : 1
+	b := hyd.flow_balance
+	b.total_inflow /= seconds
+	b.total_outflow /= seconds
+	b.consumer_demand /= seconds
+	b.emitter_demand /= seconds
+	b.leakage_demand /= seconds
+	b.deficit_demand /= seconds
+	b.storage_demand /= seconds
+	qin, qout, qstor := b.total_inflow, b.total_outflow, b.storage_demand
+	if qstor > 0 {
+		qout += qstor
+	} else {
+		qin -= qstor
+	}
+	r: f64
+	if qin == qout {
+		r = 1
+	} else if qin > 0 {
+		r = qout / qin
+	} else {
+		r = 0
+	}
+	b.ratio = r
+}
+
+// ── the run ───────────────────────────────────────────────────────────
+
+// init_hyd starts a hydraulic run: tanks at their initial levels, links
+// at their initial status, setting and flow (re-initialized when
+// initflag is set), the energy and the flow balance at zero. The file
+// positioning and result indexes are the caller's.
+init_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, initflag: int) {
+	for i in 1 ..= net.ntanks {
+		n := net.tank_node[i]
+		hyd.tank_volume[i] = net.tank_v0[i]
+		hyd.head[n] = net.tank_h0[i]
+		hyd.node_demand[n] = 0
+		hyd.old_status[net.nlinks + i] = .TEMPCLOSED
+	}
+	for i in 0 ..= net.nnodes {
+		hyd.demand_flow[i] = 0
+		hyd.emitter_flow[i] = 0
+		hyd.leak_flow[i] = 0
+	}
+	for i in 1 ..= net.nnodes do if net.ke[i] > 0 do hyd.emitter_flow[i] = 1
+
+	for i in 1 ..= net.nlinks {
+		t := net.link_type[i]
+		hyd.status[i] = net.init_status[i]
+		hyd.setting[i] = net.init_setting[i]
+		if t > .PUMP && t != .GPV && net.init_status[i] != .ACTIVE do hyd.setting[i] = MISSING
+		resist_coeff(net, hyd, i)
+		if (t == .PRV || t == .PSV || t == .FCV) && hyd.setting[i] != MISSING do hyd.status[i] = .ACTIVE
+		if hyd.status[i] <= .CLOSED {
+			hyd.flow[i] = QZERO
+		} else if abs(hyd.flow[i]) <= QZERO || initflag > 0 {
+			init_link_flow(net, hyd, i, hyd.status[i], hyd.setting[i])
+		}
+		hyd.old_status[i] = hyd.status[i]
+	}
+	for i in 1 ..= net.npumps do hyd.energy[i] = {}
+	start_flow_balance(hyd)
+
+	hyd.haltflag = false
+	t.htime = 0
+	t.hydstep = 0
+	t.rtime = t.rstep
+}
+
+// run_hyd solves one period: the demands and controls in force, then the
+// network. Returns the error or warning code.
+run_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, t: ^Times, hooks: ^Hooks) -> (now: i64, errcode: int) {
+	now = t.htime
+	demands(net, hyd, t)
+	controls(net, hyd, t, hooks)
+	iter, relerr, err := hydsolve(net, hyd, m, hooks)
+	errcode = err
+	if errcode == 0 {
+		if hyd.status_report_any do hooks.write_hydstat(hooks.ctx, i32(iter), relerr)
+		if relerr > hyd.hacc && hyd.extra_iter == -1 do hyd.haltflag = true
+		// A demand-driven run counts its pressure-deficient junctions here
+		// (EPANET does it inside its warning writer).
+		if hyd.demand_model == .DDA {
+			hyd.deficient_nodes = 0
+			for i in 1 ..= net.njuncs {
+				if hyd.head[i] < net.el[i] && hyd.node_demand[i] > 0 do hyd.deficient_nodes += 1
+			}
+		}
+		errcode = int(hooks.write_hydwarn(hooks.ctx, i32(iter), relerr))
+	}
+	return
+}
+
+// next_hyd closes the period: pump energy, the results to the file, the
+// length of the next step with the tanks moved to it, and the clock
+// advanced; at the end of the run the flow balance is closed.
+next_hyd :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, hooks: ^Hooks) -> (tstep: i64, errcode: int) {
+	get_all_pumps_energy(net, hyd)
+	if hyd.saveflag do errcode = int(hooks.save_hyd(hooks.ctx))
+	if hyd.haltflag do t.htime = t.dur
+
+	hydstep: i64 = 0
+	if t.htime < t.dur do hydstep = timestep(net, hyd, t, hooks, net.nrules)
+	if hyd.saveflag do errcode = int(hooks.save_hydstep(hooks.ctx, hydstep))
+
+	if t.dur == 0 {
+		add_energy(net, hyd, t, 0)
+	} else if t.htime < t.dur {
+		add_energy(net, hyd, t, hydstep)
+	}
+	update_flow_balance(net, hyd, t, hydstep)
+
+	if t.htime < t.dur {
+		t.htime += hydstep
+		if !hyd.openqflag {
+			if t.htime >= t.rtime do t.rtime += t.rstep
+		}
+	} else {
+		end_flow_balance(hyd, t)
+		if hyd.status_report_any do hooks.write_flowbalance(hooks.ctx)
+		t.htime += 1
+		if hyd.openqflag do t.qtime += 1
+	}
+	return hydstep, errcode
 }

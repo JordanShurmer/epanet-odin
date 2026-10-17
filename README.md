@@ -26,7 +26,9 @@ epanet/         the Odin package `epanet` — the rewrite
   hydstatus.odin  status checks between trials
   hydsolve.odin   the Newton loop
   leakage.odin    pipe leaks as node demand, per trial
-  hydraul.odin    the engine around it: demands, controls, time step, energy
+  hydraul.odin    the engine around it: demands, controls, time step, energy,
+                  the flow balance, and the run itself: inithyd, runhyd, nexthyd
+  rules.odin      the rule-based controls at run time
   quality.odin    water quality: segments, transport, reactions, tank mixing
   export.odin     the C face: one exported proc per swapped EPANET symbol
 harness/        the plug-in validation
@@ -111,18 +113,16 @@ Ported, bit-exact on every fixture:
 4. **`hydsolve`** — the Newton loop with the status checks
    (`hydsolve.odin`, `hydstatus.odin`): damping, convergence (head error,
    flow change, PDA), the ill-conditioning recovery, pressure controls,
-   and the per-trial leakage model (`leakage.odin`). What is still C's,
-   the status-report lines, is reached through `Hooks`, a struct of C
-   function pointers the bridge fills. The shadow snapshots every array
-   and scalar the solver writes, runs both, and compares the lot.
+   and the per-trial leakage model (`leakage.odin`). What is still C's is
+   reached through `Hooks`, a struct of C function pointers the bridge
+   fills. The shadow snapshots every array and scalar the solver writes,
+   runs both, and compares the lot.
 
 5. **The engine around it** — `hydraul.c` (`hydraul.odin`): the demands
    of each period, the simple controls, the next time step from the tanks,
    controls and rules, tank levels through area or volume curve, pump
    energy and efficiency, the link setters, `resistcoeff` and the PCV loss
-   curve. Rules (`rules.c`) are still C's, reached through a hook that
-   syncs the mirror around the call; so are `openhyd`/`inithyd`/`runhyd`/
-   `nexthyd`, the orchestration with the file I/O and reports.
+   curve.
 
 6. **Water quality** — `quality.c`, `qualroute.c`, `qualreact.c`
    (`quality.odin`): the volume segments as arrays with index links, the

@@ -36,7 +36,7 @@ typedef struct {
     int nnodes, njuncs, nlinks;
     int ntanks, npumps, nvalves, ncontrols;
     int ncurves, npatterns, ndemands, nadj;
-    int def_pat;
+    int def_pat, nrules, npremises, nactions;
     double *el, *ke, *leak_cfa, *leak_cva;
     int *node_type;
     double *c0;
@@ -57,7 +57,7 @@ typedef struct {
     double *tank_vmin, *tank_vmax;
     int *tank_pat, *tank_vcurve;
     int *tank_overflow;
-    double *tank_v0, *tank_v1frac, *tank_kb;
+    double *tank_h0, *tank_v0, *tank_v1frac, *tank_kb;
     int *tank_mix;
     int *pump_link, *pump_type, *pump_hcurve;
     int *pump_ecurve;
@@ -74,22 +74,38 @@ typedef struct {
     int *control_status;
     long long *control_time;
     int *control_enabled;
+    double *rule_priority;
+    int *rule_enabled;
+    int *rule_premise_first;
+    int *rule_then_first, *rule_else_first;
+    int *premise_logop, *premise_object;
+    int *premise_index, *premise_variable;
+    int *premise_relop, *premise_status;
+    double *premise_value;
+    int *action_link, *action_status;
+    double *action_setting;
     double ucf_flow, ucf_head, ucf_volume;
     double ucf_quality, ucf_elev;
+    double ucf_demand, ucf_pressure;
 } OdinNetwork;
 
 typedef struct {
     int formflag, demand_model, emit_backflow, has_leakage;
     int max_iter, extra_iter, check_freq, max_check;
     int status_report, status_report_any, epat;
+    int haltflag, saveflag, openqflag;
     double hexp, qexp, pexp, pmin, preq, rqtol, viscos;
     double htol, qtol, hacc, head_error_limit, flow_change_limit;
     double damp_limit, dmult, spgrav, epump, ecost;
-    double dsystem, emax;
+    double dsystem, emax, leakage_loss;
+    double relax, relative_error, max_head_error, max_flow_change;
+    double demand_reduction;
+    int iterations, deficient_nodes;
+    SflowBalance *flow_balance;
     double *head, *node_demand, *demand_flow, *full_demand;
     double *emitter_flow, *leak_flow, *leak_qfa, *leak_qva, *xflow;
     double *flow, *setting;
-    int *status;
+    int *status, *old_status;
     double *p, *y;
     double *tank_volume;
     Senergy *energy; /* Pump_Energy has Senergy's eight doubles in order */
@@ -111,7 +127,12 @@ typedef struct {
     void (*write_hydbal)(void *, double, double, int, int, int);
     void (*write_badvalve)(void *, int);
     void (*write_control_action)(void *, int, int);
-    int (*check_rules)(void *, long long, long long);
+    void (*write_rule_action)(void *, int, int);
+    void (*write_hydstat)(void *, int, double);
+    int (*write_hydwarn)(void *, int, double);
+    void (*write_flowbalance)(void *);
+    int (*save_hyd)(void *);
+    int (*save_hydstep)(void *, long long);
 } OdinHooks;
 
 /* The quality engine's settings and state; segs is its own segment store. */
@@ -137,11 +158,6 @@ typedef struct {
     OdinQuality *qual;
 } OdinProject;
 
-typedef struct {
-    int errcode, iterations, deficient_nodes;
-    double relative_error, max_head_error, max_flow_change;
-    double demand_reduction, relax;
-} OdinSolution;
 
 /* The ports (epanet/export.odin). */
 int odin_linsolve(int n, int ncoeffs, double *aii, double *aij, double *f, double *temp,
@@ -150,13 +166,17 @@ void odin_createsparse(int nnodes, int njuncs, int nlinks, int *n1, int *n2, int
                        int *ndx, int *ncoeffs, int **xlnz, int **nzsub, int **lnz);
 void odin_headlosscoeffs(OdinProject *);
 void odin_matrixcoeffs(OdinProject *);
-void odin_hydsolve(OdinProject *, OdinSolution *);
+int odin_hydsolve(OdinProject *, int *iter, double *relerr);
 void odin_resistcoeff(OdinProject *, int k);
 double odin_pcvlosscoeff(OdinProject *, int k, double s);
 void odin_initlinkflow(OdinProject *, int i, int s, double k);
 void odin_resetpumpflow(OdinProject *, int i);
 void odin_setlinkstatus(OdinProject *, int k, int value);
 void odin_setlinksetting(OdinProject *, int k, double value);
+int odin_checkrules(OdinProject *, long long dt);
+void odin_inithyd(OdinProject *, int initflag);
+int odin_runhyd(OdinProject *, long long *now);
+int odin_nexthyd(OdinProject *, long long *tstep);
 void odin_demands(OdinProject *);
 int odin_controls(OdinProject *);
 long long odin_timestep(OdinProject *, int nrules);
@@ -187,6 +207,10 @@ void initlinkflow_c(Project *pr, int i, char s, double k);
 void resetpumpflow_c(Project *pr, int i);
 void setlinkstatus_c(Project *pr, int k, char value, StatusType *s, double *kk);
 void setlinksetting_c(Project *pr, int k, double value, StatusType *s, double *kk);
+int checkrules_c(Project *pr, long dt);
+void inithyd_c(Project *pr, int initflag);
+int runhyd_c(Project *pr, long *t);
+int nexthyd_c(Project *pr, long *tstep);
 void demands_c(Project *pr);
 int controls_c(Project *pr);
 long timestep_c(Project *pr);
@@ -211,7 +235,9 @@ static OdinHooks hooks;
 static OdinQuality qualv;
 static OdinProject proj = {&mir, &hydv, &matv, NULL, &hooks, &qualv};
 static int mir_nodes, mir_links, mir_tanks, mir_pumps, mir_valves, mir_controls,
-           mir_curves, mir_demands, mir_adj, mir_patterns = -1; /* -1: pattern 0 always exists */
+           mir_curves, mir_demands, mir_adj, mir_premises, mir_actions,
+           mir_rules = -1, /* -1: the end-of-table entry exists with no rules */
+           mir_patterns = -1; /* -1: pattern 0 always exists */
 static double *leak_cfa, *leak_cva, *leak_qfa, *leak_qva, *tank_volume;
 static Senergy *energy;
 static double *source_mass, *tank_c, *link_rc;
@@ -280,6 +306,7 @@ static OdinProject *enter(Project *pr)
         m->tank_pat = grow(m->tank_pat, mir_tanks, sizeof(int));
         m->tank_vcurve = grow(m->tank_vcurve, mir_tanks, sizeof(int));
         m->tank_overflow = grow(m->tank_overflow, mir_tanks, sizeof(int));
+        m->tank_h0 = grow(m->tank_h0, mir_tanks, sizeof(double));
         m->tank_v0 = grow(m->tank_v0, mir_tanks, sizeof(double));
         m->tank_v1frac = grow(m->tank_v1frac, mir_tanks, sizeof(double));
         m->tank_kb = grow(m->tank_kb, mir_tanks, sizeof(double));
@@ -440,6 +467,7 @@ static OdinProject *enter(Project *pr)
         m->tank_pat[i] = t->Pat;
         m->tank_vcurve[i] = t->Vcurve;
         m->tank_overflow[i] = t->CanOverflow;
+        m->tank_h0[i] = t->H0;
         m->tank_v0[i] = t->V0;
         m->tank_v1frac[i] = t->V1frac;
         m->tank_kb[i] = t->Kb;
@@ -495,6 +523,78 @@ static OdinProject *enter(Project *pr)
     m->ucf_volume = pr->Ucf[VOLUME];
     m->ucf_quality = pr->Ucf[QUALITY];
     m->ucf_elev = pr->Ucf[ELEV];
+    m->ucf_demand = pr->Ucf[DEMAND];
+    m->ucf_pressure = pr->Ucf[PRESSURE];
+
+    /* The rules flattened: premises in a run per rule, THEN actions then
+     * ELSE actions in one run per rule. */
+    {
+        int np = 0, na = 0, r;
+        Spremise *pm;
+        Saction *ac;
+        for (r = 1; r <= net->Nrules; r++) {
+            for (pm = net->Rule[r].Premises; pm; pm = pm->next) np++;
+            for (ac = net->Rule[r].ThenActions; ac; ac = ac->next) na++;
+            for (ac = net->Rule[r].ElseActions; ac; ac = ac->next) na++;
+        }
+        if (net->Nrules > mir_rules) {
+            mir_rules = net->Nrules;
+            m->rule_priority = grow(m->rule_priority, mir_rules, sizeof(double));
+            m->rule_enabled = grow(m->rule_enabled, mir_rules, sizeof(int));
+            m->rule_premise_first = grow(m->rule_premise_first, mir_rules + 1, sizeof(int));
+            m->rule_then_first = grow(m->rule_then_first, mir_rules + 1, sizeof(int));
+            m->rule_else_first = grow(m->rule_else_first, mir_rules, sizeof(int));
+        }
+        if (np > mir_premises) {
+            mir_premises = np;
+            m->premise_logop = grow(m->premise_logop, mir_premises, sizeof(int));
+            m->premise_object = grow(m->premise_object, mir_premises, sizeof(int));
+            m->premise_index = grow(m->premise_index, mir_premises, sizeof(int));
+            m->premise_variable = grow(m->premise_variable, mir_premises, sizeof(int));
+            m->premise_relop = grow(m->premise_relop, mir_premises, sizeof(int));
+            m->premise_status = grow(m->premise_status, mir_premises, sizeof(int));
+            m->premise_value = grow(m->premise_value, mir_premises, sizeof(double));
+        }
+        if (na > mir_actions) {
+            mir_actions = na;
+            m->action_link = grow(m->action_link, mir_actions, sizeof(int));
+            m->action_status = grow(m->action_status, mir_actions, sizeof(int));
+            m->action_setting = grow(m->action_setting, mir_actions, sizeof(double));
+        }
+        m->nrules = net->Nrules;
+        m->npremises = np;
+        m->nactions = na;
+        np = na = 1;
+        for (r = 1; r <= net->Nrules; r++) {
+            Srule *rule = &net->Rule[r];
+            m->rule_priority[r] = rule->priority;
+            m->rule_enabled[r] = rule->isEnabled;
+            m->rule_premise_first[r] = np;
+            for (pm = rule->Premises; pm; pm = pm->next, np++) {
+                m->premise_logop[np] = pm->logop;
+                m->premise_object[np] = pm->object;
+                m->premise_index[np] = pm->index;
+                m->premise_variable[np] = pm->variable;
+                m->premise_relop[np] = pm->relop;
+                m->premise_status[np] = pm->status;
+                m->premise_value[np] = pm->value;
+            }
+            m->rule_then_first[r] = na;
+            for (ac = rule->ThenActions; ac; ac = ac->next, na++) {
+                m->action_link[na] = ac->link;
+                m->action_status[na] = ac->status;
+                m->action_setting[na] = ac->setting;
+            }
+            m->rule_else_first[r] = na;
+            for (ac = rule->ElseActions; ac; ac = ac->next, na++) {
+                m->action_link[na] = ac->link;
+                m->action_status[na] = ac->status;
+                m->action_setting[na] = ac->setting;
+            }
+        }
+        m->rule_premise_first[net->Nrules + 1] = np;
+        m->rule_then_first[net->Nrules + 1] = na;
+    }
 
     /* The quality engine's settings and state (its segments are its own). */
     {
@@ -546,6 +646,19 @@ static OdinProject *enter(Project *pr)
     hydv.status_report = pr->report.Statflag == FULL;
     hydv.status_report_any = pr->report.Statflag != 0;
     hydv.epat = hyd->Epat;
+    hydv.haltflag = hyd->Haltflag;
+    hydv.saveflag = pr->outfile.Saveflag;
+    hydv.openqflag = pr->quality.OpenQflag;
+    hydv.leakage_loss = hyd->LeakageLoss;
+    hydv.relax = hyd->RelaxFactor;
+    hydv.relative_error = hyd->RelativeError;
+    hydv.max_head_error = hyd->MaxHeadError;
+    hydv.max_flow_change = hyd->MaxFlowChange;
+    hydv.demand_reduction = hyd->DemandReduction;
+    hydv.iterations = hyd->Iterations;
+    hydv.deficient_nodes = hyd->DeficientNodes;
+    hydv.flow_balance = &hyd->FlowBalance;
+    hydv.old_status = (int *)hyd->OldStatus;
     hydv.hexp = hyd->Hexp;
     hydv.qexp = hyd->Qexp;
     hydv.pexp = hyd->Pexp;
@@ -622,6 +735,15 @@ static void leave(Project *pr)
     }
     hyd->Dsystem = hydv.dsystem;
     hyd->Emax = hydv.emax;
+    hyd->LeakageLoss = hydv.leakage_loss;
+    hyd->Haltflag = hydv.haltflag;
+    hyd->RelaxFactor = hydv.relax;
+    hyd->RelativeError = hydv.relative_error;
+    hyd->MaxHeadError = hydv.max_head_error;
+    hyd->MaxFlowChange = hydv.max_flow_change;
+    hyd->DemandReduction = hydv.demand_reduction;
+    hyd->Iterations = hydv.iterations;
+    hyd->DeficientNodes = hydv.deficient_nodes;
     {
         Quality *q = &pr->quality;
         for (i = 1; i <= net->Nnodes; i++) if (net->Node[i].S) net->Node[i].S->Smass = source_mass[i];
@@ -674,20 +796,33 @@ static void hook_hydbal(void *ctx, double qchange, double herror, int qlink, int
         writeline(pr, pr->Msg);
     }
 }
-/* rules.c reads the clock and the tank volumes from the project, and acts
- * through setlinkstatus/setlinksetting, which come back through this file:
- * so the mirror goes out before, and comes back in after. */
-static int hook_check_rules(void *ctx, long long htime, long long dt)
+static void hook_rule_action(void *ctx, int k, int r)
 {
     Project *pr = ctx;
-    long saved = pr->times.Htime;
-    int fired;
+    writeruleaction(pr, k, pr->network.Rule[r].label);
+}
+static void hook_hydstat(void *ctx, int iter, double relerr) { writehydstat(ctx, iter, relerr); }
+static int hook_hydwarn(void *ctx, int iter, double relerr) { return writehydwarn(ctx, iter, relerr); }
+static void hook_flowbalance(void *ctx) { writeflowbalance(ctx); }
+/* The file writers read the project: the mirror goes out first. */
+static int hook_save_hyd(void *ctx)
+{
+    Project *pr = ctx;
+    int rc;
     leave(pr);
-    pr->times.Htime = (long)htime;
-    fired = checkrules(pr, (long)dt);
-    pr->times.Htime = saved;
+    rc = savehyd(pr, &pr->times.Htime);
     enter(pr);
-    return fired;
+    return rc;
+}
+static int hook_save_hydstep(void *ctx, long long hydstep)
+{
+    Project *pr = ctx;
+    long hs = (long)hydstep;
+    int rc;
+    leave(pr);
+    rc = savehydstep(pr, &hs);
+    enter(pr);
+    return rc;
 }
 
 static void hooks_init(Project *pr)
@@ -699,7 +834,12 @@ static void hooks_init(Project *pr)
     hooks.write_hydbal = hook_hydbal;
     hooks.write_badvalve = hook_badvalve;
     hooks.write_control_action = hook_control_action;
-    hooks.check_rules = hook_check_rules;
+    hooks.write_rule_action = hook_rule_action;
+    hooks.write_hydstat = hook_hydstat;
+    hooks.write_hydwarn = hook_hydwarn;
+    hooks.write_flowbalance = hook_flowbalance;
+    hooks.save_hyd = hook_save_hyd;
+    hooks.save_hydstep = hook_save_hydstep;
 }
 
 /* ── the Odin-backed versions ────────────────────────────────────────── */
@@ -748,20 +888,9 @@ static void matrixcoeffs_odin(Project *pr) { odin_matrixcoeffs(enter(pr)); leave
 
 static int hydsolve_odin(Project *pr, int *iter, double *relerr)
 {
-    Hydraul *hyd = &pr->hydraul;
-    OdinSolution sol;
-    odin_hydsolve(enter(pr), &sol);
+    int rc = odin_hydsolve(enter(pr), iter, relerr);
     leave(pr);
-    hyd->RelaxFactor = sol.relax;
-    hyd->RelativeError = sol.relative_error;
-    hyd->MaxHeadError = sol.max_head_error;
-    hyd->MaxFlowChange = sol.max_flow_change;
-    hyd->Iterations = sol.iterations;
-    hyd->DeficientNodes = sol.deficient_nodes;
-    hyd->DemandReduction = sol.demand_reduction;
-    *iter = sol.iterations;
-    *relerr = sol.relative_error;
-    return sol.errcode;
+    return rc;
 }
 
 static void resistcoeff_odin(Project *pr, int k) { odin_resistcoeff(enter(pr), k); leave(pr); }
@@ -786,6 +915,39 @@ static void setlinksetting_odin(Project *pr, int k, double value, StatusType *s,
     (void)s; (void)kk;
     odin_setlinksetting(enter(pr), k, value);
     leave(pr);
+}
+static int checkrules_odin(Project *pr, long dt)
+{
+    int n = odin_checkrules(enter(pr), dt);
+    leave(pr);
+    return n;
+}
+/* inithyd: EPANET's file positioning and result indexes stay here. */
+static void inithyd_odin(Project *pr, int initflag)
+{
+    Network *net = &pr->network;
+    int i;
+    odin_inithyd(enter(pr), initflag);
+    leave(pr);
+    for (i = 1; i <= net->Nnodes; i++) net->Node[i].ResultIndex = i;
+    for (i = 1; i <= net->Nlinks; i++) net->Link[i].ResultIndex = i;
+    if (pr->outfile.Saveflag) fseek(pr->outfile.HydFile, pr->outfile.HydOffset, SEEK_SET);
+}
+static int runhyd_odin(Project *pr, long *t)
+{
+    long long now;
+    int rc = odin_runhyd(enter(pr), &now);
+    leave(pr);
+    *t = (long)now;
+    return rc;
+}
+static int nexthyd_odin(Project *pr, long *tstep)
+{
+    long long ts;
+    int rc = odin_nexthyd(enter(pr), &ts);
+    leave(pr);
+    *tstep = (long)ts;
+    return rc;
 }
 static void demands_odin(Project *pr) { odin_demands(enter(pr)); leave(pr); }
 static int controls_odin(Project *pr)
@@ -964,6 +1126,10 @@ void initlinkflow(Project *pr, int i, char s, double k) { initlinkflow_odin(pr, 
 void resetpumpflow(Project *pr, int i) { resetpumpflow_odin(pr, i); }
 void setlinkstatus(Project *pr, int k, char v, StatusType *s, double *kk) { setlinkstatus_odin(pr, k, v, s, kk); }
 void setlinksetting(Project *pr, int k, double v, StatusType *s, double *kk) { setlinksetting_odin(pr, k, v, s, kk); }
+int checkrules(Project *pr, long dt) { return checkrules_odin(pr, dt); }
+void inithyd(Project *pr, int initflag) { inithyd_odin(pr, initflag); }
+int runhyd(Project *pr, long *t) { return runhyd_odin(pr, t); }
+int nexthyd(Project *pr, long *tstep) { return nexthyd_odin(pr, tstep); }
 void demands(Project *pr) { demands_odin(pr); }
 int controls(Project *pr) { return controls_odin(pr); }
 long timestep(Project *pr) { return timestep_odin(pr); }
@@ -996,13 +1162,15 @@ SHADOW(resetpumpflow) SHADOW(setlinkstatus) SHADOW(setlinksetting) SHADOW(demand
 SHADOW(controls) SHADOW(timestep) SHADOW(tanklevels) SHADOW(tankvolume) SHADOW(tankgrade)
 SHADOW(getenergy) SHADOW(getallpumpsenergy) SHADOW(addenergy)
 SHADOW(initqual) SHADOW(runqual) SHADOW(nextqual) SHADOW(stepqual) SHADOW(avgqual)
+SHADOW(checkrules) SHADOW(inithyd) SHADOW(runhyd) SHADOW(nexthyd)
 static Shadow *shadows[] = {
     &shadow_linsolve, &shadow_createsparse, &shadow_headlosscoeffs, &shadow_matrixcoeffs,
     &shadow_hydsolve, &shadow_resistcoeff, &shadow_pcvlosscoeff, &shadow_initlinkflow,
     &shadow_resetpumpflow, &shadow_setlinkstatus, &shadow_setlinksetting, &shadow_demands,
     &shadow_controls, &shadow_timestep, &shadow_tanklevels, &shadow_tankvolume, &shadow_tankgrade,
     &shadow_getenergy, &shadow_getallpumpsenergy, &shadow_addenergy,
-    &shadow_initqual, &shadow_runqual, &shadow_nextqual, &shadow_stepqual, &shadow_avgqual};
+    &shadow_initqual, &shadow_runqual, &shadow_nextqual, &shadow_stepqual, &shadow_avgqual,
+    &shadow_checkrules, &shadow_inithyd, &shadow_runhyd, &shadow_nexthyd};
 static int shadow_registered;
 
 static void shadow_report(void)
@@ -1133,6 +1301,8 @@ static void snap_setup(Snapshot *s, Project *pr)
     for (i = 1; i <= nl; i++) snap_add(s, "Link.Rc", &net->Link[i].Rc, 0, 0);
     for (i = 1; i <= nn; i++) if (net->Node[i].S) snap_add(s, "Smass", &net->Node[i].S->Smass, 0, 0);
     snap_add(s, "Times", &pr->times, (int)(sizeof(Times) / sizeof(long)) - 1, 2);
+    snap_add(s, "FlowBalance", &hyd->FlowBalance, (int)(sizeof(SflowBalance) / sizeof(double)) - 1, 0);
+    if (hyd->OpenHflag) snap_add(s, "OldStatus", hyd->OldStatus, nl + net->Ntanks, 1);
 }
 
 static void snap_take(Snapshot *s)
@@ -1406,24 +1576,75 @@ int controls(Project *pr)
     return o;
 }
 
-/* Rules keep state of their own (which premises held, when), so a step that
- * evaluates them cannot be run twice: with rules in the network the Odin
- * version runs alone and the call is counted but not compared. */
 long timestep(Project *pr)
 {
     long c, o;
-    if (pr->network.Nrules > 0) {
-        shadow_begin(&shadow_timestep);
-        return timestep_odin(pr);
-    }
-    {
-        SHADOW_BEGIN(timestep);
-        c = timestep_c(pr);
-        SHADOW_MID();
-        o = timestep_odin(pr);
-        SHADOW_END();
-        compare(sh_, "return", 0, (double)c, (double)o);
-    }
+    SHADOW_BEGIN(timestep);
+    c = timestep_c(pr);
+    SHADOW_MID();
+    o = timestep_odin(pr);
+    SHADOW_END();
+    compare(sh_, "return", 0, (double)c, (double)o);
+    return o;
+}
+
+int checkrules(Project *pr, long dt)
+{
+    int c, o;
+    SHADOW_BEGIN(checkrules);
+    c = checkrules_c(pr, dt);
+    SHADOW_MID();
+    o = checkrules_odin(pr, dt);
+    SHADOW_END();
+    compare(sh_, "return", 0, c, o);
+    return o;
+}
+
+void inithyd(Project *pr, int initflag)
+{
+    long pos0, pos_c;
+    SHADOW_BEGIN(inithyd);
+    pos0 = pr->outfile.HydFile ? ftell(pr->outfile.HydFile) : 0;
+    inithyd_c(pr, initflag);
+    pos_c = pr->outfile.HydFile ? ftell(pr->outfile.HydFile) : 0;
+    SHADOW_MID();
+    if (pr->outfile.HydFile) fseek(pr->outfile.HydFile, pos0, SEEK_SET);
+    inithyd_odin(pr, initflag);
+    SHADOW_END();
+    compare(sh_, "hydfile", 0, (double)pos_c, (double)(pr->outfile.HydFile ? ftell(pr->outfile.HydFile) : 0));
+}
+
+int runhyd(Project *pr, long *t)
+{
+    int c, o;
+    long t_c;
+    SHADOW_BEGIN(runhyd);
+    c = runhyd_c(pr, &t_c);
+    SHADOW_MID();
+    o = runhyd_odin(pr, t);
+    SHADOW_END();
+    compare(sh_, "return", 0, c, o);
+    compare(sh_, "t", 0, (double)t_c, (double)*t);
+    return o;
+}
+
+/* nexthyd writes the step to the hydraulics file when results are saved:
+ * the C run's write is rewound so the Odin run writes the same bytes. */
+int nexthyd(Project *pr, long *tstep)
+{
+    int c, o;
+    long ts_c, pos0, pos_c;
+    SHADOW_BEGIN(nexthyd);
+    pos0 = pr->outfile.HydFile ? ftell(pr->outfile.HydFile) : 0;
+    c = nexthyd_c(pr, &ts_c);
+    pos_c = pr->outfile.HydFile ? ftell(pr->outfile.HydFile) : 0;
+    SHADOW_MID();
+    if (pr->outfile.HydFile) fseek(pr->outfile.HydFile, pos0, SEEK_SET);
+    o = nexthyd_odin(pr, tstep);
+    SHADOW_END();
+    compare(sh_, "return", 0, c, o);
+    compare(sh_, "tstep", 0, (double)ts_c, (double)*tstep);
+    compare(sh_, "hydfile", 0, (double)pos_c, (double)(pr->outfile.HydFile ? ftell(pr->outfile.HydFile) : 0));
     return o;
 }
 

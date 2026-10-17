@@ -18,29 +18,20 @@ Balance :: struct {
 	max_flow_link:   int,
 }
 
-// Solution is what hydsolve reports back.
-Solution :: struct {
-	errcode:          int, // 0, or 110: the matrix went ill-conditioned
-	iterations:       int,
-	relative_error:   f64, // total flow change over total flow
-	max_head_error:   f64,
-	max_flow_change:  f64,
-	deficient_nodes:  int, // PDA: junctions short of their demand
-	demand_reduction: f64, // PDA: % of demand not met at those
-	relax:            f64, // the relaxation factor the last trial used
-}
-
-hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, hooks: ^Hooks) -> (sol: Solution) {
+// hydsolve returns the trials taken, the convergence error and 0 or 110
+// (the matrix went ill-conditioned), and leaves the rest of what it
+// found in hyd.
+hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, hooks: ^Hooks) -> (iter: int, relerr: f64, errcode: int) {
 	next_check := hyd.check_freq
 	hyd.relax = 1
 	bal: Balance
-	errcode := 0
+	hyd.deficient_nodes = 0
+	hyd.demand_reduction = 0
 
 	if hyd.status_report do hooks.write_relerr(hooks.ctx, 0, 0)
 	max_trials := hyd.max_iter
 	if hyd.extra_iter > 0 do max_trials += hyd.extra_iter
-	iter := 1
-	relerr := 0.0
+	iter = 1
 	for iter <= max_trials {
 		// A·H = F for the heads; H comes back in f.
 		headloss_coeffs(net, hyd)
@@ -70,7 +61,7 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, ho
 			valve_change = valve_status(net, hyd, hooks)
 		}
 
-		if has_converged(net, hyd, hooks, relerr, &bal, &sol) {
+		if has_converged(net, hyd, hooks, relerr, &bal) {
 			if iter > hyd.max_iter do break
 			stat_change := valve_change
 			if link_status(net, hyd, hooks) do stat_change = true
@@ -93,12 +84,10 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, ho
 		hyd.node_demand[i] = hyd.demand_flow[i] + hyd.emitter_flow[i] + hyd.leak_flow[i]
 	}
 
-	sol.errcode = errcode
-	sol.iterations = iter
-	sol.relative_error = relerr
-	sol.max_head_error = bal.max_head_error
-	sol.max_flow_change = bal.max_flow_change
-	sol.relax = hyd.relax
+	hyd.relative_error = relerr
+	hyd.max_head_error = bal.max_head_error
+	hyd.max_flow_change = bal.max_flow_change
+	hyd.iterations = iter
 	return
 }
 
@@ -288,7 +277,7 @@ check_hyd_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^
 	}
 }
 
-has_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks, relerr: f64, bal: ^Balance, sol: ^Solution) -> bool {
+has_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Hooks, relerr: f64, bal: ^Balance) -> bool {
 	if relerr > hyd.hacc do return false
 	check_hyd_balance(net, hyd, bal)
 	if hyd.status_report {
@@ -304,19 +293,19 @@ has_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, hooks: ^Ho
 	if hyd.head_error_limit > 0 && bal.max_head_error > hyd.head_error_limit do return false
 	if hyd.flow_change_limit > 0 && bal.max_flow_change > hyd.flow_change_limit do return false
 	if hyd.has_leakage && !leakage_converged(net, hyd) do return false
-	if hyd.demand_model == .PDA do return pda_converged(net, hyd, sol)
+	if hyd.demand_model == .PDA do return pda_converged(net, hyd)
 	return true
 }
 
 // pda_converged: every pressure-dependent demand must agree with the
 // demand equation at the solved pressure. Also totals the shortfall.
-pda_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, sol: ^Solution) -> bool {
+pda_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) -> bool {
 	QTOL :: 0.0001 // cfs, about 0.05 gpm
 	converged := true
 	total_demand, total_reduction := 0.0, 0.0
 	dp := hyd.preq - hyd.pmin
-	sol.deficient_nodes = 0
-	sol.demand_reduction = 0
+	hyd.deficient_nodes = 0
+	hyd.demand_reduction = 0
 	for i in 1 ..= net.njuncs {
 		if hyd.full_demand[i] <= 0 do continue
 		p := hyd.head[i] - net.el[i]
@@ -331,11 +320,11 @@ pda_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, sol: ^Solu
 		}
 		if abs(q - hyd.demand_flow[i]) > QTOL do converged = false
 		if hyd.demand_flow[i] + QTOL < hyd.full_demand[i] {
-			sol.deficient_nodes += 1
+			hyd.deficient_nodes += 1
 			total_demand += hyd.full_demand[i]
 			total_reduction += hyd.full_demand[i] - hyd.demand_flow[i]
 		}
 	}
-	if total_demand > 0 do sol.demand_reduction = total_reduction / total_demand * 100
+	if total_demand > 0 do hyd.demand_reduction = total_reduction / total_demand * 100
 	return converged
 }

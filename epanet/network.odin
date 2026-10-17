@@ -81,6 +81,23 @@ Mix_Model :: enum i32 {
 	LIFO,
 }
 
+// A rule premise: IF/AND/OR <object> <variable> <relop> <value or status>.
+Rule_Object :: enum i32 {
+	JUNC, RESERV, TANK, PIPE, PUMP, VALVE, NODE, LINK, SYSTEM,
+}
+Rule_Variable :: enum i32 {
+	DEMAND, HEAD, GRADE, LEVEL, PRESSURE, FLOW, STATUS, SETTING, POWER, TIME, CLOCKTIME, FILLTIME, DRAINTIME,
+}
+Rule_Op :: enum i32 {
+	EQ, NE, LE, GE, LT, GT, IS, NOT, BELOW, ABOVE,
+}
+Rule_Logic :: enum i32 {
+	RULE, IF, AND, OR, THEN, ELSE, PRIORITY, DISABLED, ERROR,
+}
+Rule_Status :: enum i32 {
+	IS_NUMBER, IS_OPEN, IS_CLOSED, IS_ACTIVE,
+}
+
 Control_Type :: enum i32 {
 	LOWLEVEL, // act when grade falls below a level
 	HILEVEL, // act when grade rises above a level
@@ -120,6 +137,15 @@ Pump_Energy :: struct {
 	total_cost:     f64,
 	current_power:  f64, // kW
 	current_effic:  f64,
+}
+
+// Flow_Balance is the run's account of water in and out, laid out as
+// EPANET's.
+Flow_Balance :: struct {
+	total_inflow, total_outflow:     f64,
+	consumer_demand, emitter_demand: f64,
+	leakage_demand, deficit_demand:  f64,
+	storage_demand, ratio:           f64,
 }
 
 // Times is the simulation clock, in seconds, laid out as EPANET's.
@@ -180,7 +206,7 @@ Network :: struct {
 	tank_vmin, tank_vmax:                    []f64,
 	tank_pat, tank_vcurve:                   []i32, // a reservoir's head pattern; a tank's volume curve
 	tank_overflow:                           []b32,
-	tank_v0, tank_v1frac, tank_kb:           []f64, // initial volume, mixing-zone fraction, bulk coefficient
+	tank_h0, tank_v0, tank_v1frac, tank_kb:  []f64, // initial level and volume, mixing-zone fraction, bulk coefficient
 	tank_mix:                                []Mix_Model,
 
 	// pumps
@@ -207,9 +233,29 @@ Network :: struct {
 	control_time:                            []i64,
 	control_enabled:                         []b32,
 
+	// rules: rule i's premises are premise_*[rule_premise_first[i] ..<
+	// rule_premise_first[i+1]], its THEN actions action_*[rule_then_first[i]
+	// ..< rule_else_first[i]] and its ELSE actions on to rule_then_first[i+1]
+	nrules:                                  int,
+	rule_priority:                           []f64,
+	rule_enabled:                            []b32,
+	rule_premise_first:                      []i32,
+	rule_then_first, rule_else_first:        []i32,
+	premise_logop:                           []Rule_Logic,
+	premise_object:                          []Rule_Object,
+	premise_index:                           []i32,
+	premise_variable:                        []Rule_Variable,
+	premise_relop:                           []Rule_Op,
+	premise_status:                          []Rule_Status,
+	premise_value:                           []f64,
+	action_link:                             []i32,
+	action_status:                           []Rule_Status,
+	action_setting:                          []f64,
+
 	// unit conversion: curves are stored in user units
 	ucf_flow, ucf_head, ucf_volume:          f64,
 	ucf_quality, ucf_elev:                   f64,
+	ucf_demand, ucf_pressure:                f64,
 }
 
 // Hydraulics is the solver's settings and state over nodes and links.
@@ -230,6 +276,13 @@ Hydraulics :: struct {
 	max_iter, extra_iter:      int, // trials, and extra trials with statuses frozen
 	check_freq, max_check:     int, // status checks every check_freq trials up to max_check
 	relax:                     f64, // the relaxation factor in force
+	// what the last solve reported
+	relative_error:            f64, // total flow change over total flow
+	max_head_error:            f64,
+	max_flow_change:           f64,
+	iterations:                int,
+	deficient_nodes:           int, // PDA: junctions short of their demand
+	demand_reduction:          f64, // PDA: % of demand not met at those
 	status_report:             bool, // the full status report is on (hooks get called)
 	status_report_any:         bool, // any status report is on
 	dmult:                     f64, // demand multiplier
@@ -238,6 +291,10 @@ Hydraulics :: struct {
 	epat:                      int, // energy price pattern
 	dsystem:                   f64, // total demand this period
 	emax:                      f64, // peak power so far
+	leakage_loss:              f64, // % of inflow lost to leaks this period
+	haltflag:                  bool, // stop: the system would not balance
+	saveflag, openqflag:       bool, // results go to the hydraulics file; quality is open
+	flow_balance:              ^Flow_Balance,
 
 	// nodes
 	head:                      []f64,
@@ -250,6 +307,7 @@ Hydraulics :: struct {
 	// links
 	flow, setting:             []f64,
 	status:                    []Status,
+	old_status:                []Status, // links then tanks, as of the last report
 	p, y:                      []f64, // 1/gradient and loss/gradient per link
 
 	// tanks and pumps
@@ -257,8 +315,8 @@ Hydraulics :: struct {
 	energy:                    []Pump_Energy,
 }
 
-// Hooks are what is still C's: the lines of the status report, and the
-// rule-based controls. ctx goes back with every call.
+// Hooks are what is still C's: the report writer and the hydraulics
+// file. ctx goes back with every call.
 Hooks :: struct {
 	ctx:                  rawptr,
 	write_relerr:         proc "c" (ctx: rawptr, iter: i32, relerr: f64),
@@ -267,7 +325,10 @@ Hooks :: struct {
 	write_hydbal:         proc "c" (ctx: rawptr, flow_change, head_error: f64, qlink, qnode, hlink: i32),
 	write_badvalve:       proc "c" (ctx: rawptr, link: i32),
 	write_control_action: proc "c" (ctx: rawptr, link, control: i32),
-	// check_rules evaluates the rules at clock time htime over the last dt
-	// seconds, acts on any that fire, and says whether one did.
-	check_rules:          proc "c" (ctx: rawptr, htime, dt: i64) -> b32,
+	write_rule_action:    proc "c" (ctx: rawptr, link, rule: i32),
+	write_hydstat:        proc "c" (ctx: rawptr, iter: i32, relerr: f64),
+	write_hydwarn:        proc "c" (ctx: rawptr, iter: i32, relerr: f64) -> i32, // the warning code
+	write_flowbalance:    proc "c" (ctx: rawptr),
+	save_hyd:             proc "c" (ctx: rawptr) -> i32, // the step's results to the hydraulics file
+	save_hydstep:         proc "c" (ctx: rawptr, hydstep: i64) -> i32,
 }

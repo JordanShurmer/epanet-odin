@@ -15,7 +15,7 @@ Network_C :: struct {
 	nnodes, njuncs, nlinks:                      c.int,
 	ntanks, npumps, nvalves, ncontrols:          c.int,
 	ncurves, npatterns, ndemands, nadj:          c.int,
-	def_pat:                                     c.int,
+	def_pat, nrules, npremises, nactions:        c.int,
 	el, ke, leak_cfa, leak_cva:                  [^]f64,
 	node_type:                                   [^]c.int,
 	c0:                                          [^]f64,
@@ -36,7 +36,7 @@ Network_C :: struct {
 	tank_vmin, tank_vmax:                        [^]f64,
 	tank_pat, tank_vcurve:                       [^]c.int,
 	tank_overflow:                               [^]b32,
-	tank_v0, tank_v1frac, tank_kb:               [^]f64,
+	tank_h0, tank_v0, tank_v1frac, tank_kb:      [^]f64,
 	tank_mix:                                    [^]c.int,
 	pump_link, pump_type, pump_hcurve:           [^]c.int,
 	pump_ecurve:                                 [^]c.int,
@@ -53,22 +53,38 @@ Network_C :: struct {
 	control_status:                              [^]c.int,
 	control_time:                                [^]i64,
 	control_enabled:                             [^]b32,
+	rule_priority:                               [^]f64,
+	rule_enabled:                                [^]b32,
+	rule_premise_first:                          [^]c.int,
+	rule_then_first, rule_else_first:            [^]c.int,
+	premise_logop, premise_object:               [^]c.int,
+	premise_index, premise_variable:             [^]c.int,
+	premise_relop, premise_status:               [^]c.int,
+	premise_value:                               [^]f64,
+	action_link, action_status:                  [^]c.int,
+	action_setting:                              [^]f64,
 	ucf_flow, ucf_head, ucf_volume:              f64,
 	ucf_quality, ucf_elev:                       f64,
+	ucf_demand, ucf_pressure:                    f64,
 }
 
 Hydraulics_C :: struct {
 	formflag, demand_model, emit_backflow, has_leakage:         c.int,
 	max_iter, extra_iter, check_freq, max_check:                c.int,
 	status_report, status_report_any, epat:                     c.int,
+	haltflag, saveflag, openqflag:                              c.int,
 	hexp, qexp, pexp, pmin, preq, rqtol, viscos:                f64,
 	htol, qtol, hacc, head_error_limit, flow_change_limit:      f64,
 	damp_limit, dmult, spgrav, epump, ecost:                    f64,
-	dsystem, emax:                                              f64, // written back
+	dsystem, emax, leakage_loss:                                f64, // written back
+	relax, relative_error, max_head_error, max_flow_change:     f64, // written back
+	demand_reduction:                                           f64, // written back
+	iterations, deficient_nodes:                                c.int, // written back
+	flow_balance:                                               ^Flow_Balance,
 	head, node_demand, demand_flow, full_demand:                [^]f64,
 	emitter_flow, leak_flow, leak_qfa, leak_qva, xflow:         [^]f64,
 	flow, setting:                                              [^]f64,
-	status:                                                     [^]c.int,
+	status, old_status:                                         [^]c.int,
 	p, y:                                                       [^]f64,
 	tank_volume:                                                [^]f64,
 	energy:                                                     [^]Pump_Energy,
@@ -107,12 +123,6 @@ Project_C :: struct {
 	qual:  ^Quality_C,
 }
 
-Solution_C :: struct {
-	errcode, iterations, deficient_nodes:            c.int,
-	relative_error, max_head_error, max_flow_change: f64,
-	demand_reduction, relax:                         f64,
-}
-
 // Views is the package's own types over the C memory.
 Views :: struct {
 	net: Network,
@@ -128,6 +138,7 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 	nn, nj, nl := int(n.nnodes), int(n.njuncs), int(n.nlinks)
 	nt, np, nv, nk := int(n.ntanks), int(n.npumps), int(n.nvalves), int(n.ncontrols)
 	nc, npat, nd, na := int(n.ncurves), int(n.npatterns), int(n.ndemands), int(n.nadj)
+	nr, npr, nac := int(n.nrules), int(n.npremises), int(n.nactions)
 
 	curves := make([]Curve, nc + 1, context.temp_allocator)
 	for i in 1 ..= nc do curves[i] = {n.curve_x[i][:n.curve_npts[i]], n.curve_y[i][:n.curve_npts[i]]}
@@ -155,7 +166,8 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		tank_vmin = n.tank_vmin[:nt + 1], tank_vmax = n.tank_vmax[:nt + 1],
 		tank_pat = n.tank_pat[:nt + 1], tank_vcurve = n.tank_vcurve[:nt + 1],
 		tank_overflow = n.tank_overflow[:nt + 1],
-		tank_v0 = n.tank_v0[:nt + 1], tank_v1frac = n.tank_v1frac[:nt + 1], tank_kb = n.tank_kb[:nt + 1],
+		tank_h0 = n.tank_h0[:nt + 1], tank_v0 = n.tank_v0[:nt + 1],
+		tank_v1frac = n.tank_v1frac[:nt + 1], tank_kb = n.tank_kb[:nt + 1],
 		tank_mix = ([^]Mix_Model)(n.tank_mix)[:nt + 1],
 		pump_link = n.pump_link[:np + 1], pump_type = ([^]Pump_Type)(n.pump_type)[:np + 1],
 		pump_hcurve = n.pump_hcurve[:np + 1], pump_ecurve = n.pump_ecurve[:np + 1],
@@ -169,8 +181,22 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		control_grade = n.control_grade[:nk + 1], control_setting = n.control_setting[:nk + 1],
 		control_status = ([^]Status)(n.control_status)[:nk + 1],
 		control_time = n.control_time[:nk + 1], control_enabled = n.control_enabled[:nk + 1],
+		nrules = nr, rule_priority = n.rule_priority[:nr + 1], rule_enabled = n.rule_enabled[:nr + 1],
+		rule_premise_first = n.rule_premise_first[:nr + 2],
+		rule_then_first = n.rule_then_first[:nr + 2], rule_else_first = n.rule_else_first[:nr + 1],
+		premise_logop = ([^]Rule_Logic)(n.premise_logop)[:npr + 1],
+		premise_object = ([^]Rule_Object)(n.premise_object)[:npr + 1],
+		premise_index = n.premise_index[:npr + 1],
+		premise_variable = ([^]Rule_Variable)(n.premise_variable)[:npr + 1],
+		premise_relop = ([^]Rule_Op)(n.premise_relop)[:npr + 1],
+		premise_status = ([^]Rule_Status)(n.premise_status)[:npr + 1],
+		premise_value = n.premise_value[:npr + 1],
+		action_link = n.action_link[:nac + 1],
+		action_status = ([^]Rule_Status)(n.action_status)[:nac + 1],
+		action_setting = n.action_setting[:nac + 1],
 		ucf_flow = n.ucf_flow, ucf_head = n.ucf_head, ucf_volume = n.ucf_volume,
 		ucf_quality = n.ucf_quality, ucf_elev = n.ucf_elev,
+		ucf_demand = n.ucf_demand, ucf_pressure = n.ucf_pressure,
 	}
 	v.hyd = {
 		formflag = Headloss_Formula(h.formflag), demand_model = Demand_Model(h.demand_model),
@@ -183,13 +209,19 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		check_freq = int(h.check_freq), max_check = int(h.max_check),
 		status_report = h.status_report != 0, status_report_any = h.status_report_any != 0,
 		dmult = h.dmult, spgrav = h.spgrav, epump = h.epump, ecost = h.ecost, epat = int(h.epat),
-		dsystem = h.dsystem, emax = h.emax,
+		dsystem = h.dsystem, emax = h.emax, leakage_loss = h.leakage_loss,
+		relax = h.relax, relative_error = h.relative_error, max_head_error = h.max_head_error,
+		max_flow_change = h.max_flow_change, demand_reduction = h.demand_reduction,
+		iterations = int(h.iterations), deficient_nodes = int(h.deficient_nodes),
+		haltflag = h.haltflag != 0, saveflag = h.saveflag != 0, openqflag = h.openqflag != 0,
+		flow_balance = h.flow_balance,
 		head = h.head[:nn + 1], node_demand = h.node_demand[:nn + 1],
 		demand_flow = h.demand_flow[:nn + 1], full_demand = h.full_demand[:nn + 1],
 		emitter_flow = h.emitter_flow[:nn + 1], leak_flow = h.leak_flow[:nn + 1],
 		leak_qfa = h.leak_qfa[:nn + 1], leak_qva = h.leak_qva[:nn + 1], xflow = h.xflow[:nn + 1],
 		flow = h.flow[:nl + 1], setting = h.setting[:nl + 1],
-		status = ([^]Status)(h.status)[:nl + 1], p = h.p[:nl + 1], y = h.y[:nl + 1],
+		status = ([^]Status)(h.status)[:nl + 1], old_status = ([^]Status)(h.old_status)[:nl + nt + 1],
+		p = h.p[:nl + 1], y = h.y[:nl + 1],
 		tank_volume = h.tank_volume[:nt + 1], energy = h.energy[:np + 1],
 	}
 	if q := p.qual; q != nil {
@@ -223,6 +255,15 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 unview :: proc "contextless" (p: ^Project_C, v: ^Views) {
 	p.hyd.dsystem = v.hyd.dsystem
 	p.hyd.emax = v.hyd.emax
+	p.hyd.leakage_loss = v.hyd.leakage_loss
+	p.hyd.haltflag = c.int(v.hyd.haltflag)
+	p.hyd.relax = v.hyd.relax
+	p.hyd.relative_error = v.hyd.relative_error
+	p.hyd.max_head_error = v.hyd.max_head_error
+	p.hyd.max_flow_change = v.hyd.max_flow_change
+	p.hyd.demand_reduction = v.hyd.demand_reduction
+	p.hyd.iterations = c.int(v.hyd.iterations)
+	p.hyd.deficient_nodes = c.int(v.hyd.deficient_nodes)
 	if q := p.qual; q != nil {
 		b := v.q.balance
 		q.reactive = c.int(v.q.reactive)
@@ -300,18 +341,15 @@ odin_matrixcoeffs :: proc "c" (p: ^Project_C) {
 }
 
 @(export, link_name = "odin_hydsolve")
-odin_hydsolve :: proc "c" (p: ^Project_C, out: ^Solution_C) {
+odin_hydsolve :: proc "c" (p: ^Project_C, iter: ^c.int, relerr: ^f64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	sol := hydsolve(&v.net, &v.hyd, &v.m, p.hooks)
-	out^ = {
-		errcode = c.int(sol.errcode), iterations = c.int(sol.iterations),
-		deficient_nodes = c.int(sol.deficient_nodes),
-		relative_error = sol.relative_error, max_head_error = sol.max_head_error,
-		max_flow_change = sol.max_flow_change, demand_reduction = sol.demand_reduction,
-		relax = sol.relax,
-	}
+	it, re, rc := hydsolve(&v.net, &v.hyd, &v.m, p.hooks)
+	iter^ = c.int(it)
+	relerr^ = re
+	unview(p, &v)
+	return c.int(rc)
 }
 
 // ── the hydraulic engine ──────────────────────────────────────────────
@@ -362,6 +400,47 @@ odin_setlinksetting :: proc "c" (p: ^Project_C, k: c.int, value: f64) {
 	defer free_all(context.temp_allocator)
 	v := view(p)
 	set_link_setting(&v.net, &v.hyd, int(k), value)
+}
+
+@(export, link_name = "odin_checkrules")
+odin_checkrules :: proc "c" (p: ^Project_C, dt: i64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	n := check_rules(&v.net, &v.hyd, p.times, p.hooks, dt)
+	unview(p, &v)
+	return c.int(n)
+}
+
+@(export, link_name = "odin_inithyd")
+odin_inithyd :: proc "c" (p: ^Project_C, initflag: c.int) {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	init_hyd(&v.net, &v.hyd, p.times, int(initflag))
+	unview(p, &v)
+}
+
+@(export, link_name = "odin_runhyd")
+odin_runhyd :: proc "c" (p: ^Project_C, now: ^i64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	t, rc := run_hyd(&v.net, &v.hyd, &v.m, p.times, p.hooks)
+	now^ = t
+	unview(p, &v)
+	return c.int(rc)
+}
+
+@(export, link_name = "odin_nexthyd")
+odin_nexthyd :: proc "c" (p: ^Project_C, tstep: ^i64) -> c.int {
+	context = runtime.default_context()
+	defer free_all(context.temp_allocator)
+	v := view(p)
+	ts, rc := next_hyd(&v.net, &v.hyd, p.times, p.hooks)
+	tstep^ = ts
+	unview(p, &v)
+	return c.int(rc)
 }
 
 @(export, link_name = "odin_demands")
