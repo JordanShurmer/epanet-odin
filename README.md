@@ -14,8 +14,13 @@ make epanet-odin               # the same
 
 ```
 src/            the Odin package `epanet` — the rewrite
-  smatrix.odin    sparse Cholesky solver (EPANET smatrix.c: linsolve)
+  smatrix.odin    numeric Cholesky: linsolve
+  sparse.odin     symbolic factorization: createsparse
+  genmmd.odin     minimum-degree ordering
+  network.odin    the model and solver state, one array per field
+  hydcoeffs.odin  link coefficients and matrix assembly
   export.odin     the C face: one exported proc per swapped EPANET symbol
+fixtures/       small networks that reach the branches the real ones do not
 bridge/
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
   run.c           driver: every node and link value, every time step, %.17g
@@ -51,9 +56,14 @@ flavours), and add the symbol to `SWAP`'s default in `test.sh`.
 
 ## Fixtures
 
-EPANET's `example-networks/*.inp` and `tests/data/*.inp`, plus this repo's
-`utilities/*/data/*.inp` and `smoketest/testdata/model.inp`. Override with
-`FIXTURES="…"`.
+EPANET's `example-networks/*.inp` and `tests/data/*.inp`, this repo's
+`utilities/*/data/*.inp` and `smoketest/testdata/model.inp`, a generated
+40×40 grid with parallel pipes, and `fixtures/`: `valves.inp` (every valve
+type on its own branch, a check valve, a constant-horsepower pump, controls),
+`dw-emitters.inp` (Darcy-Weisbach through laminar, transitional and
+turbulent flow, emitters, pressure-driven demand, a pump speed pattern) and
+`cm-leakage.inp` (Chezy-Manning, leaking pipes, emitter backflow). Override
+with `FIXTURES="…"`.
 
 ## Roadmap — core out
 
@@ -61,18 +71,20 @@ Ported, bit-exact on every fixture:
 
 1. **`linsolve`** — numeric Cholesky factorization + forward/back
    substitution (`smatrix.odin`).
+2. **`createsparse`** — the symbolic side: adjacency with parallel links
+   folded, Liu's multiple-minimum-degree ordering (`genmmd.odin`, the
+   Fortran's loops kept so the ordering is EPANET's), fill-in, column
+   structure (`sparse.odin`).
+3. **`headlosscoeffs` / `matrixcoeffs`** — every link's P and Y (H-W, D-W,
+   C-M pipes, pumps, all seven valve types) and the assembly of A and F
+   with emitters and pressure-driven demands (`hydcoeffs.odin`). The first
+   piece that reads the model, which the Odin side holds as one array per
+   field (`network.odin`); the bridge fills that mirror from EPANET's
+   structs on every call. Leakage stays in C for now, called back between
+   the demands and the node balances.
 
 Next, in order:
 
-2. **Symbolic factorization** — `createsparse`: multiple-minimum-degree
-   reordering (`genmmd.c`), fill-in (`factorize`), `storesparse`,
-   `sortsparse`. One exported proc taking the adjacency as CSR arrays and
-   giving back `Order`, `Row`, `XLNZ`, `NZSUB`, `LNZ`, `Ndx`.
-3. **Link coefficients** — `hydcoeffs.c`: head-loss formulas (H-W, D-W,
-   C-M), pump and valve coefficients, emitters, leakage, PDA demands. The
-   first piece that reads the network, so the Odin side gets its own
-   struct-of-arrays network (`Network`) that the bridge fills from EPANET's
-   `Snode`/`Slink`.
 4. **The Newton loop** — `hydsolve`, with `hydstatus.c` (valve and link
    status checks) and the convergence tests.
 5. **Time stepping and controls** — `hydraul.c`: tank levels, patterns,

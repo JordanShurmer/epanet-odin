@@ -46,7 +46,10 @@ typedef struct {
 
 static Shadow shadow_linsolve = {"linsolve"};
 static Shadow shadow_createsparse = {"createsparse"};
-static Shadow *shadows[] = {&shadow_linsolve, &shadow_createsparse};
+static Shadow shadow_headlosscoeffs = {"headlosscoeffs"};
+static Shadow shadow_matrixcoeffs = {"matrixcoeffs"};
+static Shadow *shadows[] = {&shadow_linsolve, &shadow_createsparse,
+                            &shadow_headlosscoeffs, &shadow_matrixcoeffs};
 static int shadow_registered;
 
 static void shadow_report(void)
@@ -221,4 +224,313 @@ int createsparse(Project *pr)
 }
 #else
 int createsparse(Project *pr) { return createsparse_odin(pr); }
+#endif
+
+/* ── headlosscoeffs / matrixcoeffs ──────────────────────────────────── */
+
+/* The Odin package's view of the model: one array per field (the layout
+ * of Network_C, Hydraulics_C and Matrix_C in src/export.odin). The
+ * hydraulic state arrays are EPANET's own, used in place; the per-struct
+ * fields of Slink, Spump, Svalve and Scurve are copied into a mirror on
+ * every call, which is what a harness that must never go stale has to do. */
+typedef struct {
+    int nnodes, njuncs, nlinks, npumps, nvalves, ncurves;
+    double *el, *ke;
+    int *link_type, *n1, *n2;
+    double *diam, *km, *kc, *r;
+    int *link_pump, *link_valve;
+    int *pump_type, *pump_hcurve;
+    double *pump_h0, *pump_r, *pump_n;
+    int *valve_link, *valve_curve;
+    int *curve_npts;
+    double **curve_x, **curve_y;
+    double ucf_flow, ucf_head;
+} OdinNetwork;
+
+typedef struct {
+    int formflag, demand_model, emit_backflow, has_leakage;
+    double hexp, qexp, pexp, pmin, preq, rqtol, viscos;
+    double *head, *demand_flow, *full_demand, *emitter_flow, *xflow;
+    double *flow, *setting;
+    int *status;
+    double *p, *y;
+} OdinHydraulics;
+
+typedef struct {
+    int ncoeffs;
+    double *aii, *aij, *f;
+    int *row, *ndx;
+} OdinMatrix;
+
+void odin_headlosscoeffs(OdinNetwork *n, OdinHydraulics *h);
+void odin_matrixcoeffs(OdinNetwork *n, OdinHydraulics *h, OdinMatrix *m,
+                       void (*leakage)(void *), void *ctx);
+
+void headlosscoeffs_c(Project *pr);
+void matrixcoeffs_c(Project *pr);
+void leakagecoeffs(Project *pr);
+
+static OdinNetwork mirror;
+static int mirror_nodes, mirror_links, mirror_pumps, mirror_valves, mirror_curves;
+
+/* grow — (re)allocate a mirror array when the network got bigger. */
+static void *grow(void *p, int n, size_t size)
+{
+    return realloc(p, (size_t)(n + 1) * size);
+}
+
+static void fill_mirror(Project *pr)
+{
+    Network *net = &pr->network;
+    OdinNetwork *m = &mirror;
+    int i, k;
+
+    if (net->Nnodes > mirror_nodes) {
+        mirror_nodes = net->Nnodes;
+        m->el = grow(m->el, mirror_nodes, sizeof(double));
+        m->ke = grow(m->ke, mirror_nodes, sizeof(double));
+    }
+    if (net->Nlinks > mirror_links) {
+        mirror_links = net->Nlinks;
+        m->link_type = grow(m->link_type, mirror_links, sizeof(int));
+        m->n1 = grow(m->n1, mirror_links, sizeof(int));
+        m->n2 = grow(m->n2, mirror_links, sizeof(int));
+        m->diam = grow(m->diam, mirror_links, sizeof(double));
+        m->km = grow(m->km, mirror_links, sizeof(double));
+        m->kc = grow(m->kc, mirror_links, sizeof(double));
+        m->r = grow(m->r, mirror_links, sizeof(double));
+        m->link_pump = grow(m->link_pump, mirror_links, sizeof(int));
+        m->link_valve = grow(m->link_valve, mirror_links, sizeof(int));
+    }
+    if (net->Npumps > mirror_pumps) {
+        mirror_pumps = net->Npumps;
+        m->pump_type = grow(m->pump_type, mirror_pumps, sizeof(int));
+        m->pump_hcurve = grow(m->pump_hcurve, mirror_pumps, sizeof(int));
+        m->pump_h0 = grow(m->pump_h0, mirror_pumps, sizeof(double));
+        m->pump_r = grow(m->pump_r, mirror_pumps, sizeof(double));
+        m->pump_n = grow(m->pump_n, mirror_pumps, sizeof(double));
+    }
+    if (net->Nvalves > mirror_valves) {
+        mirror_valves = net->Nvalves;
+        m->valve_link = grow(m->valve_link, mirror_valves, sizeof(int));
+        m->valve_curve = grow(m->valve_curve, mirror_valves, sizeof(int));
+    }
+    if (net->Ncurves > mirror_curves) {
+        mirror_curves = net->Ncurves;
+        m->curve_npts = grow(m->curve_npts, mirror_curves, sizeof(int));
+        m->curve_x = grow(m->curve_x, mirror_curves, sizeof(double *));
+        m->curve_y = grow(m->curve_y, mirror_curves, sizeof(double *));
+    }
+
+    m->nnodes = net->Nnodes;
+    m->njuncs = net->Njuncs;
+    m->nlinks = net->Nlinks;
+    m->npumps = net->Npumps;
+    m->nvalves = net->Nvalves;
+    m->ncurves = net->Ncurves;
+    for (i = 1; i <= net->Nnodes; i++) {
+        m->el[i] = net->Node[i].El;
+        m->ke[i] = net->Node[i].Ke;
+    }
+    for (k = 1; k <= net->Nlinks; k++) {
+        Slink *l = &net->Link[k];
+        m->link_type[k] = l->Type;
+        m->n1[k] = l->N1;
+        m->n2[k] = l->N2;
+        m->diam[k] = l->Diam;
+        m->km[k] = l->Km;
+        m->kc[k] = l->Kc;
+        m->r[k] = l->R;
+        m->link_pump[k] = 0;
+        m->link_valve[k] = 0;
+    }
+    for (i = 1; i <= net->Npumps; i++) {
+        Spump *p = &net->Pump[i];
+        m->link_pump[p->Link] = i;
+        m->pump_type[i] = p->Ptype;
+        m->pump_hcurve[i] = p->Hcurve;
+        m->pump_h0[i] = p->H0;
+        m->pump_r[i] = p->R;
+        m->pump_n[i] = p->N;
+    }
+    for (i = 1; i <= net->Nvalves; i++) {
+        m->link_valve[net->Valve[i].Link] = i;
+        m->valve_link[i] = net->Valve[i].Link;
+        m->valve_curve[i] = net->Valve[i].Curve;
+    }
+    for (i = 1; i <= net->Ncurves; i++) {
+        m->curve_npts[i] = net->Curve[i].Npts;
+        m->curve_x[i] = net->Curve[i].X;
+        m->curve_y[i] = net->Curve[i].Y;
+    }
+    m->ucf_flow = pr->Ucf[FLOW];
+    m->ucf_head = pr->Ucf[HEAD];
+}
+
+/* pumpcoeff rewrites a custom-curve pump's H0, R and N: carry them back. */
+static void pumps_from_mirror(Project *pr)
+{
+    Network *net = &pr->network;
+    int i;
+    for (i = 1; i <= net->Npumps; i++) {
+        net->Pump[i].H0 = mirror.pump_h0[i];
+        net->Pump[i].R = mirror.pump_r[i];
+        net->Pump[i].N = mirror.pump_n[i];
+    }
+}
+
+static OdinHydraulics hydraulics_view(Project *pr)
+{
+    Hydraul *hyd = &pr->hydraul;
+    OdinHydraulics h;
+    h.formflag = hyd->Formflag;
+    h.demand_model = hyd->DemandModel;
+    h.emit_backflow = hyd->EmitBackFlag;
+    h.has_leakage = hyd->HasLeakage;
+    h.hexp = hyd->Hexp;
+    h.qexp = hyd->Qexp;
+    h.pexp = hyd->Pexp;
+    h.pmin = hyd->Pmin;
+    h.preq = hyd->Preq;
+    h.rqtol = hyd->RQtol;
+    h.viscos = hyd->Viscos;
+    h.head = hyd->NodeHead;
+    h.demand_flow = hyd->DemandFlow;
+    h.full_demand = hyd->FullDemand;
+    h.emitter_flow = hyd->EmitterFlow;
+    h.xflow = hyd->Xflow;
+    h.flow = hyd->LinkFlow;
+    h.setting = hyd->LinkSetting;
+    h.status = (int *)hyd->LinkStatus;
+    h.p = hyd->P;
+    h.y = hyd->Y;
+    return h;
+}
+
+static OdinMatrix matrix_view(Project *pr)
+{
+    Smatrix *sm = &pr->hydraul.smatrix;
+    OdinMatrix m;
+    m.ncoeffs = sm->Ncoeffs;
+    m.aii = sm->Aii;
+    m.aij = sm->Aij;
+    m.f = sm->F;
+    m.row = sm->Row;
+    m.ndx = sm->Ndx;
+    return m;
+}
+
+static void leakage_cb(void *ctx) { leakagecoeffs((Project *)ctx); }
+
+static void headlosscoeffs_odin(Project *pr)
+{
+    OdinHydraulics h = hydraulics_view(pr);
+    fill_mirror(pr);
+    odin_headlosscoeffs(&mirror, &h);
+    pumps_from_mirror(pr);
+}
+
+static void matrixcoeffs_odin(Project *pr)
+{
+    OdinHydraulics h = hydraulics_view(pr);
+    OdinMatrix m = matrix_view(pr);
+    fill_mirror(pr);
+    odin_matrixcoeffs(&mirror, &h, &m, leakage_cb, pr);
+}
+
+#ifdef SHADOW
+
+static double *dup_doubles(double *a, int n)
+{
+    double *d = malloc((n + 1) * sizeof(double));
+    memcpy(d, a, (n + 1) * sizeof(double));
+    return d;
+}
+
+static void compare_doubles(Shadow *s, const char *what, double *c, double *o, int from, int to)
+{
+    int i;
+    for (i = from; i <= to; i++) compare(s, what, i, c[i], o[i]);
+}
+
+void headlosscoeffs(Project *pr)
+{
+    Shadow *s = &shadow_headlosscoeffs;
+    Network *net = &pr->network;
+    Hydraul *hyd = &pr->hydraul;
+    int nl = net->Nlinks, np = net->Npumps, i;
+    double *p0 = dup_doubles(hyd->P, nl), *y0 = dup_doubles(hyd->Y, nl);
+    double *pc, *yc, *h0c, *rc, *nc;
+
+    shadow_begin(s);
+    h0c = malloc((np + 1) * sizeof(double));
+    rc = malloc((np + 1) * sizeof(double));
+    nc = malloc((np + 1) * sizeof(double));
+    for (i = 1; i <= np; i++) {
+        h0c[i] = net->Pump[i].H0; rc[i] = net->Pump[i].R; nc[i] = net->Pump[i].N;
+    }
+
+    /* C on the live project, remembered; then the state put back and Odin. */
+    headlosscoeffs_c(pr);
+    pc = dup_doubles(hyd->P, nl);
+    yc = dup_doubles(hyd->Y, nl);
+    memcpy(hyd->P, p0, (nl + 1) * sizeof(double));
+    memcpy(hyd->Y, y0, (nl + 1) * sizeof(double));
+    for (i = 1; i <= np; i++) {
+        double t;
+        t = net->Pump[i].H0; net->Pump[i].H0 = h0c[i]; h0c[i] = t;
+        t = net->Pump[i].R; net->Pump[i].R = rc[i]; rc[i] = t;
+        t = net->Pump[i].N; net->Pump[i].N = nc[i]; nc[i] = t;
+    }
+    headlosscoeffs_odin(pr);
+
+    compare_doubles(s, "P", pc, hyd->P, 1, nl);
+    compare_doubles(s, "Y", yc, hyd->Y, 1, nl);
+    if (getenv("SHADOW_DEBUG")) for (i = 1; i <= nl; i++) if (pc[i] != hyd->P[i])
+        fprintf(stderr, "  link %d type %d status %d setting %.17g flow %.17g km %g r %g\n", i,
+                net->Link[i].Type, hyd->LinkStatus[i], hyd->LinkSetting[i], hyd->LinkFlow[i], net->Link[i].Km, net->Link[i].R);
+    for (i = 1; i <= np; i++) {
+        compare(s, "Pump.H0", i, h0c[i], net->Pump[i].H0);
+        compare(s, "Pump.R", i, rc[i], net->Pump[i].R);
+        compare(s, "Pump.N", i, nc[i], net->Pump[i].N);
+    }
+    free(p0); free(y0); free(pc); free(yc); free(h0c); free(rc); free(nc);
+}
+
+void matrixcoeffs(Project *pr)
+{
+    Shadow *s = &shadow_matrixcoeffs;
+    Network *net = &pr->network;
+    Hydraul *hyd = &pr->hydraul;
+    Smatrix *sm = &hyd->smatrix;
+    int nn = net->Nnodes, nl = net->Nlinks, nc = sm->Ncoeffs;
+    double *p0 = dup_doubles(hyd->P, nl), *y0 = dup_doubles(hyd->Y, nl);
+    double *x0 = dup_doubles(hyd->Xflow, nn);
+    double *aii, *aij, *f, *xf, *pc, *yc;
+
+    shadow_begin(s);
+    matrixcoeffs_c(pr);
+    aii = dup_doubles(sm->Aii, nn);
+    aij = dup_doubles(sm->Aij, nc);
+    f = dup_doubles(sm->F, nn);
+    xf = dup_doubles(hyd->Xflow, nn);
+    pc = dup_doubles(hyd->P, nl);
+    yc = dup_doubles(hyd->Y, nl);
+    memcpy(hyd->P, p0, (nl + 1) * sizeof(double));
+    memcpy(hyd->Y, y0, (nl + 1) * sizeof(double));
+    memcpy(hyd->Xflow, x0, (nn + 1) * sizeof(double));
+    matrixcoeffs_odin(pr);
+
+    compare_doubles(s, "Aii", aii, sm->Aii, 1, nn);
+    compare_doubles(s, "Aij", aij, sm->Aij, 1, nc);
+    compare_doubles(s, "F", f, sm->F, 1, nn);
+    compare_doubles(s, "Xflow", xf, hyd->Xflow, 1, nn);
+    compare_doubles(s, "P", pc, hyd->P, 1, nl);
+    compare_doubles(s, "Y", yc, hyd->Y, 1, nl);
+    free(p0); free(y0); free(x0);
+    free(aii); free(aij); free(f); free(xf); free(pc); free(yc);
+}
+#else
+void headlosscoeffs(Project *pr) { headlosscoeffs_odin(pr); }
+void matrixcoeffs(Project *pr) { matrixcoeffs_odin(pr); }
 #endif

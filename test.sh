@@ -27,7 +27,7 @@ for a in "$@"; do
 done
 
 ODIN=${ODIN:-odin}
-SWAP=${SWAP:-"linsolve createsparse"}
+SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs"}
 TOL=${TOL:-1e-9}
 EP=epanet/EPANET
 OD=epanet/odin
@@ -38,11 +38,12 @@ CFLAGS="-O2 -w -I$EP/include -I$EP/src"
 command -v "$ODIN" >/dev/null || usage "odin compiler not found (ODIN=$ODIN); see $OD/README.md"
 [ -f $EP/src/epanet.c ] || usage "$EP is empty — git submodule update --init epanet/EPANET"
 
-# The default fixture set: EPANET's own example networks and the utilities
-# this repo serves.
+# The default fixture set: EPANET's own example networks, the utilities this
+# repo serves, and fixtures/ — small networks written to reach the branches
+# those do not (every valve type, D-W and C-M, emitters, PDA, leakage).
 if [ -z "${FIXTURES:-}" ]; then
     FIXTURES="$(ls $EP/example-networks/*.inp $EP/tests/data/*.inp \
-        utilities/*/data/*.inp smoketest/testdata/model.inp 2>/dev/null)"
+        utilities/*/data/*.inp smoketest/testdata/model.inp $OD/fixtures/*.inp 2>/dev/null)"
 fi
 
 rm -rf "$B"
