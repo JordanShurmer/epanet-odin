@@ -1,0 +1,55 @@
+# release.yml — a v* tag becomes a GitHub release: the harness proves the
+# engine on Linux, package.sh builds one tarball per platform, and the last
+# job publishes them. See package.sh for what a tarball holds.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+name: release
+on:
+  push:
+    tags: ['v*']
+
+env:
+  ODIN_RELEASE: dev-2026-10   # the compiler, from github.com/odin-lang/Odin/releases
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, platform: linux-amd64 }
+          - { os: macos-latest, platform: macos-arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Odin
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -sSL "https://github.com/odin-lang/Odin/releases/download/$ODIN_RELEASE/odin-${{ matrix.platform }}-$ODIN_RELEASE.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+          echo "$HOME/odin" >> "$GITHUB_PATH"
+          "$HOME/odin/odin" version
+      - name: harness
+        if: matrix.platform == 'linux-amd64'   # the plug-in build needs GNU objcopy
+        run: harness/test.sh
+      - name: package
+        run: ./package.sh "$GITHUB_REF_NAME" "${{ matrix.platform }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: build/epanet-odin-*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" dist/*.tar.gz --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

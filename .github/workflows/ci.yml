@@ -1,0 +1,24 @@
+# ci.yml — the harness on every push and pull request: EPANET with the Odin
+# pieces plugged in must match plain EPANET on every fixture.
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  ODIN_RELEASE: dev-2026-10   # the compiler, from github.com/odin-lang/Odin/releases
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Odin
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -sSL "https://github.com/odin-lang/Odin/releases/download/$ODIN_RELEASE/odin-linux-amd64-$ODIN_RELEASE.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+          echo "$HOME/odin" >> "$GITHUB_PATH"
+          "$HOME/odin/odin" version
+      - run: harness/test.sh

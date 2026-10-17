@@ -22,15 +22,20 @@
 
 #include "epanet2_2.h"
 
+static EN_Project ph;
+static int nnodes, nlinks, qualtype;
+
+/* fail — say what went wrong and close the project, so its temp files
+   (the en?????? EPANET opens in the working directory) go with it. */
 static int fail(const char *what, int err)
 {
     fprintf(stderr, "run: %s: EPANET error %d\n", what, err);
+    EN_close(ph);
+    EN_deleteproject(ph);
     return 2;
 }
 
-static int nnodes, nlinks, qualtype;
-
-static void dump(EN_Project ph, long t)
+static void dump(long t)
 {
     int i;
     double head, pres, dem, flow, vel, hloss, status, setting, q;
@@ -57,7 +62,6 @@ static void dump(EN_Project ph, long t)
 
 int main(int argc, char **argv)
 {
-    EN_Project ph;
     int err, stepq, tracenode;
     long t, tstep, tleft;
     double ratio;
@@ -95,7 +99,7 @@ int main(int argc, char **argv)
             if (err > 6) return fail("runH", err);
             printf("%ld warn %d\n", t, err);
             if ((err = EN_runQ(ph, &t))) return fail("runQ", err);
-            dump(ph, t);
+            dump(t);
             if ((err = EN_nextH(ph, &tstep))) return fail("nextH", err);
             if ((err = EN_nextQ(ph, &tstep))) return fail("nextQ", err);
         } while (tstep > 0);
@@ -110,7 +114,7 @@ int main(int argc, char **argv)
         if ((err = EN_initQ(ph, save))) return fail("initQ", err);
         do {
             if ((err = EN_runQ(ph, &t))) return fail("runQ", err);
-            dump(ph, t);
+            dump(t);
             if ((err = EN_stepQ(ph, &tleft))) return fail("stepQ", err);
         } while (tleft > 0);
         EN_closeQ(ph);

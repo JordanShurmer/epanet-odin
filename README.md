@@ -56,6 +56,10 @@ harness/        the plug-in validation
   dumpnet.c       the twin of cmd/dumpnet over EPANET's own reader
   fixtures/       small networks that reach the branches the real ones do not
   out.sh          the ✓/✗ output vocabulary the script speaks
+package.sh      builds lib/, include/ and bin/ and tars them up for a release
+.github/workflows/
+  ci.yml          the harness, on every push and pull request
+  release.yml     a v* tag: the harness, package.sh per platform, the release
 EPANET/         OWA EPANET, cloned on demand (gitignored)
 build/          scratch (gitignored)
 ```
@@ -241,12 +245,39 @@ bywater-mill carries this repository as the submodule `epanet/odin`; its
 `make epanet-odin` runs the harness here against its own EPANET checkout
 with its utilities' networks added to the fixtures.
 
+## Releases
+
+Every push and pull request runs the harness (`.github/workflows/ci.yml`).
+A tag `vX.Y.Z` makes a release (`release.yml`): the harness on Linux, then
+`package.sh` on `linux-amd64` and `macos-arm64`, then a GitHub release with
+one tarball per platform:
+
+```
+epanet-odin-v0.1.0-linux-amd64/
+  lib/libepanet-api.a    EN_* with the C ABI — links wherever libepanet2.a
+                         does, -lm with it
+  include/               epanet2_2.h, epanet2_enums.h (EPANET's own: the API
+                         is EPANET's), LICENSE-EPANET
+  bin/dumpnet            reads an .inp and prints the project
+  LICENSE  README.md
+```
+
+The Odin package is not in it: an Odin program takes `epanet/` as source.
+
+```sh
+./package.sh v0.1.0 linux-amd64       # the same tarball by hand, in build/
+git tag v0.1.0 && git push origin v0.1.0
+```
+
 ## License
 
 MIT, like EPANET itself (see `LICENSE`).
 
 ## Installing Odin
 
-A release zip from <https://github.com/odin-lang/Odin/releases> works; so
-does building it: `apt install llvm-18-dev clang-18`, clone the repo at a
-`dev-YYYY-MM` tag, `make release-native`, and point `ODIN=` at the binary.
+A release tarball from <https://github.com/odin-lang/Odin/releases> works
+(`odin-linux-amd64-dev-2026-10.tar.gz`, `odin-macos-arm64-…`; untar and
+point `ODIN=` at the `odin` in it — the workflows do the same, with the
+release named at the top of each). So does building it: `apt install
+llvm-18-dev clang-18`, clone the repo at a `dev-YYYY-MM` tag, `make
+release-native`, and point `ODIN=` at the binary.
