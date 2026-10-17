@@ -32,16 +32,16 @@ for a in "$@"; do
 done
 
 ODIN=${ODIN:-odin}
-SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve"}
+SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve resistcoeff pcvlosscoeff initlinkflow resetpumpflow setlinkstatus setlinksetting demands controls timestep tanklevels tankvolume tankgrade getenergy getallpumpsenergy addenergy"}
 TOL=${TOL:-1e-9}
 EP=${EPANET:-EPANET}
 EPANET_COMMIT=444725fbf16ab28b0470ef0ed281dc4849d49583   # OWA EPANET 2.3 dev
 B=build
 CC=${CC:-clang}
-CFLAGS="-O2 -w -I$EP/include -I$EP/src"
+CFLAGS="-O2 -fPIC -fsemantic-interposition -w -I$EP/include -I$EP/src"
 ODINFLAGS="-o:speed"
 if [ -n "${ASAN:-}" ]; then
-    CFLAGS="$CFLAGS -g -fsanitize=address"
+    CFLAGS="$CFLAGS -g -fsanitize=address -fno-sanitize-address-globals-dead-stripping"
     ODINFLAGS="-o:none -debug -sanitize:address"
 fi
 
@@ -95,13 +95,27 @@ done
 run $CC $CFLAGS -c harness/run.c -o "$B/run.o" || bad "compile run.c"
 
 cp "$B"/c/*.o "$B/odin/"
-# Rename each swapped symbol in the object that defines it. `nm` finds that
-# object; the callers keep asking for the bare name and get the bridge's.
+# Each object that defines a swapped symbol goes into the odin build twice.
+# One copy, <obj>_c.o, has every swapped symbol renamed sym -> sym_c (the
+# definitions it holds and the calls it makes alike) with only those
+# definitions left global: the pure-C originals, calling each other. The
+# other keeps its name but with its swapped definitions weakened, so the
+# bridge's strong ones take every call, those from the same file included
+# (EPANET is compiled with -fsemantic-interposition so that such calls are
+# real calls, not inlined bodies).
+renames=""; keeps=""
+for sym in $SWAP; do renames="$renames --redefine-sym $sym=${sym}_c"; keeps="$keeps -G ${sym}_c"; done
+for obj in "$B"/odin/*.o; do
+    defined=$(nm "$obj" | awk -v syms=" $SWAP " '$2=="T" && index(syms, " "$3" ") {print $3}')
+    [ -n "$defined" ] || continue
+    weakens=""
+    for sym in $defined; do weakens="$weakens --weaken-symbol=$sym"; done
+    dbg "objcopy $renames $keeps $obj ${obj%.o}_c.o"
+    run objcopy $renames $keeps "$obj" "${obj%.o}_c.o" || bad "swap $(basename "$obj")"
+    run objcopy $weakens "$obj" || bad "weaken $(basename "$obj")"
+done
 for sym in $SWAP; do
-    obj=$(nm -A "$B"/odin/*.o 2>/dev/null | grep " T $sym\$" | cut -d: -f1 | head -1)
-    [ -n "$obj" ] || { bad "swap $sym" "no object defines $sym"; continue; }
-    dbg "objcopy --redefine-sym $sym=${sym}_c $obj"
-    run objcopy --redefine-sym "$sym=${sym}_c" "$obj" || bad "swap $sym"
+    nm "$B"/odin/*_c.o | grep " T ${sym}_c\$" >/dev/null || bad "swap $sym" "no object defines $sym"
 done
 
 note "odin build epanet"

@@ -26,6 +26,7 @@ epanet/         the Odin package `epanet` — the rewrite
   hydstatus.odin  status checks between trials
   hydsolve.odin   the Newton loop
   leakage.odin    pipe leaks as node demand, per trial
+  hydraul.odin    the engine around it: demands, controls, time step, energy
   export.odin     the C face: one exported proc per swapped EPANET symbol
 harness/        the plug-in validation
   test.sh         builds the three binaries from EPANET's sources and compares
@@ -40,11 +41,15 @@ build/          scratch (gitignored)
 ## How a piece is plugged in
 
 EPANET's source is never edited. `harness/test.sh` compiles `EPANET/src` to
-objects, then for each symbol in `SWAP` renames the C definition in its own
-object (`objcopy --redefine-sym linsolve=linsolve_c`). The callers keep asking
-for `linsolve`, and `harness/bridge.c` supplies it: a function with EPANET's
-signature that hands the arrays to the Odin package. Three binaries of the
-same driver come out:
+objects. Every object that defines a symbol in `SWAP` then goes into the
+build twice: a `_c` copy with every swapped symbol renamed (`objcopy
+--redefine-sym linsolve=linsolve_c`, definitions and calls alike, the rest
+made local) — the pure-C originals, calling each other — and the object
+itself with those definitions weakened, so the strong ones in
+`harness/bridge.c` take every call, including the ones from the same file
+(EPANET is compiled with `-fsemantic-interposition` so those are real calls).
+The bridge's `linsolve` has EPANET's signature and hands the arrays to the
+Odin package. Three binaries of the same driver come out:
 
 | | |
 |---|---|
@@ -54,9 +59,13 @@ same driver come out:
 
 A fixture passes when `run-c` and `run-odin` print the same results
 (bit-exact, or within `TOL=1e-9` relative — then it says so) **and**
-`run-shadow` reports zero per-call mismatches. `ASAN=1` builds all three
-under AddressSanitizer, Odin side included (`-sanitize:address`); it found
-the one heap overrun so far, in the shadow's own bookkeeping. The shadow is the sharp tool:
+`run-shadow` reports zero per-call mismatches. The shadow snapshots every
+array and struct field the engine writes before each call, so one pattern
+covers every symbol. The one thing it cannot do twice is evaluate the rules,
+which keep state of their own: on a network with rules the time step runs
+Odin alone, and the end-to-end comparison carries it. `ASAN=1` builds all
+three under AddressSanitizer, Odin side included (`-sanitize:address`); it
+found the one heap overrun so far, in the shadow's own bookkeeping. The shadow is the sharp tool:
 a port that drifts on the ten-thousandth call of a 24-hour run is caught at
 that call, with the index and both values, not as a smeared difference in
 the final heads.
@@ -72,8 +81,10 @@ grid with parallel pipes, and `harness/fixtures/`: `valves.inp` (every valve
 type on its own branch, a check valve, a constant-horsepower pump, controls),
 `dw-emitters.inp` (Darcy-Weisbach through laminar, transitional and
 turbulent flow, emitters, pressure-driven demand, a pump speed pattern) and
-`cm-leakage.inp` (Chezy-Manning, leaking pipes, emitter backflow). Add your
-own networks with `EXTRA_FIXTURES="…"`, or run only some with `FIXTURES="…"`.
+`cm-leakage.inp` (Chezy-Manning, leaking pipes, emitter backflow) and
+`rules-energy.inp` (rules on a tank and the clock, a volume curve, an
+efficiency curve with energy prices and patterns, a reservoir head pattern,
+timer and clock-time controls). Add your own networks with `EXTRA_FIXTURES="…"`, or run only some with `FIXTURES="…"`.
 
 ## Roadmap — core out
 
@@ -101,11 +112,16 @@ Ported, bit-exact on every fixture:
    function pointers the bridge fills. The shadow snapshots every array
    and scalar the solver writes, runs both, and compares the lot.
 
+5. **The engine around it** — `hydraul.c` (`hydraul.odin`): the demands
+   of each period, the simple controls, the next time step from the tanks,
+   controls and rules, tank levels through area or volume curve, pump
+   energy and efficiency, the link setters, `resistcoeff` and the PCV loss
+   curve. Rules (`rules.c`) are still C's, reached through a hook that
+   syncs the mirror around the call; so are `openhyd`/`inithyd`/`runhyd`/
+   `nexthyd`, the orchestration with the file I/O and reports.
+
 Next, in order:
 
-5. **Time stepping and controls** — `hydraul.c`: tank levels, patterns,
-   simple controls, rules, energy; `openleakage`'s pipe-to-node leak
-   coefficients; `resistcoeff` and the PCV loss curve.
 6. **Water quality** — `quality.c`, `qualroute.c`, `qualreact.c`.
 7. **The outside** — `.inp` parsing, reporting, the toolkit API; at that
    point a program links the Odin library instead of `libepanet2.a`.

@@ -65,12 +65,49 @@ MISSING : f64 : -1e10 // a setting that is not set
 TINY : f64 : 1e-6
 BIG : f64 : 1e10
 MINPDIFF : f64 : 0.1 // least PDA pressure range (psi or m)
+QZERO : f64 : 1e-6 // as good as no flow (cfs)
+KW_PER_HP : f64 : 0.7457
+SEC_PER_DAY :: 86400
 CBIG : f64 : 1e8 // a huge resistance: a closed link
 CSMALL : f64 : 1e-6 // a tiny resistance: an open valve
 
 // Curve is a table of points, 0-based, x ascending.
 Curve :: struct {
 	x, y: []f64,
+}
+
+// Pattern is a cycle of multipliers, one per pattern time step.
+Pattern :: struct {
+	f: []f64,
+}
+
+// Pump_Energy is one pump's running energy statistics.
+Pump_Energy :: struct {
+	time_on_line:   f64, // hours
+	efficiency:     f64, // time-weighted
+	kwhrs_per_flow: f64,
+	kwhrs:          f64,
+	max_kwatts:     f64,
+	total_cost:     f64,
+	current_power:  f64, // kW
+	current_effic:  f64,
+}
+
+// Times is the simulation clock, in seconds, laid out as EPANET's.
+Times :: struct {
+	tstart:   i64, // starting time of day
+	hstep:    i64, // nominal hydraulic step
+	pstep:    i64, // pattern step
+	pstart:   i64, // starting pattern time
+	rstep:    i64, // reporting step
+	rstart:   i64,
+	rtime:    i64, // next reporting time
+	htime:    i64, // current hydraulic time
+	hydstep:  i64, // the step actually taken
+	qstep:    i64,
+	qtime:    i64,
+	rulestep: i64, // rule evaluation step
+	dur:      i64, // duration
 }
 
 // Network is the model as the hydraulic solver reads it.
@@ -82,35 +119,53 @@ Network :: struct {
 	el, ke:                                  []f64,
 	leak_cfa, leak_cva:                      []f64,
 
+	// demands: node i's are demand_base[demand_first[i] ..< demand_first[i+1]]
+	demand_first:                            []i32,
+	demand_base:                             []f64,
+	demand_pat:                              []i32,
+	def_pat:                                 int, // the pattern a demand without one uses
+
 	// links
 	link_type:                               []Link_Type,
 	n1, n2:                                  []i32,
-	diam, km, kc, r:                         []f64, // diameter, minor loss, roughness/setting, resistance
+	diam, len, km, kc, r:                    []f64, // diameter, length, minor loss, roughness/setting, resistance
 	link_pump, link_valve:                   []i32, // the pump or valve a link is, 0 for none
+	init_status:                             []Status,
+	init_setting:                            []f64,
 
 	// tanks and reservoirs: tank i is node njuncs + i; a reservoir has no area
+	tank_node:                               []i32,
 	tank_area, tank_hmin, tank_hmax:         []f64,
+	tank_vmin, tank_vmax:                    []f64,
+	tank_pat, tank_vcurve:                   []i32, // a reservoir's head pattern; a tank's volume curve
 	tank_overflow:                           []b32,
 
 	// pumps
+	pump_link:                               []i32,
 	pump_type:                               []Pump_Type,
-	pump_hcurve:                             []i32,
+	pump_hcurve, pump_ecurve:                []i32,
 	pump_h0, pump_r, pump_n:                 []f64, // head curve: h = h0 - r·q^n
 	pump_hmax:                               []f64, // shutoff head
+	pump_q0:                                 []f64, // initial flow
+	pump_upat, pump_epat:                    []i32, // utilization and energy-price patterns
+	pump_ecost:                              []f64, // the pump's own energy price, 0 = the global one
 
 	// valves
 	valve_link, valve_curve:                 []i32,
 	curves:                                  []Curve,
+	patterns:                                []Pattern, // [0] is a single 1.0, for demands without one
 
-	// simple controls on junction pressure (the tank and time ones act
-	// between time steps, not inside the solver)
+	// simple controls: on a junction's pressure (checked inside the
+	// solver), on a tank's level or the clock (between time steps)
 	control_link, control_node:              []i32,
 	control_type:                            []Control_Type,
 	control_grade, control_setting:          []f64,
 	control_status:                          []Status,
+	control_time:                            []i64,
+	control_enabled:                         []b32,
 
 	// unit conversion: curves are stored in user units
-	ucf_flow, ucf_head:                      f64,
+	ucf_flow, ucf_head, ucf_volume:          f64,
 }
 
 // Hydraulics is the solver's settings and state over nodes and links.
@@ -132,6 +187,13 @@ Hydraulics :: struct {
 	check_freq, max_check:     int, // status checks every check_freq trials up to max_check
 	relax:                     f64, // the relaxation factor in force
 	status_report:             bool, // the full status report is on (hooks get called)
+	status_report_any:         bool, // any status report is on
+	dmult:                     f64, // demand multiplier
+	spgrav, epump:             f64, // specific gravity; global pump efficiency (%)
+	ecost:                     f64, // energy price
+	epat:                      int, // energy price pattern
+	dsystem:                   f64, // total demand this period
+	emax:                      f64, // peak power so far
 
 	// nodes
 	head:                      []f64,
@@ -145,15 +207,23 @@ Hydraulics :: struct {
 	flow, setting:             []f64,
 	status:                    []Status,
 	p, y:                      []f64, // 1/gradient and loss/gradient per link
+
+	// tanks and pumps
+	tank_volume:               []f64,
+	energy:                    []Pump_Energy,
 }
 
-// Hooks are the lines of the status report, which the solver still
-// leaves to C's report writer. ctx goes back with every call.
+// Hooks are what is still C's: the lines of the status report, and the
+// rule-based controls. ctx goes back with every call.
 Hooks :: struct {
-	ctx:              rawptr,
-	write_relerr:     proc "c" (ctx: rawptr, iter: i32, relerr: f64),
-	write_statchange: proc "c" (ctx: rawptr, link: i32, old, new: Status),
-	write_hyderr:     proc "c" (ctx: rawptr, node: i32),
-	write_hydbal:     proc "c" (ctx: rawptr, flow_change, head_error: f64, qlink, qnode, hlink: i32),
-	write_badvalve:   proc "c" (ctx: rawptr, link: i32),
+	ctx:                  rawptr,
+	write_relerr:         proc "c" (ctx: rawptr, iter: i32, relerr: f64),
+	write_statchange:     proc "c" (ctx: rawptr, link: i32, old, new: Status),
+	write_hyderr:         proc "c" (ctx: rawptr, node: i32),
+	write_hydbal:         proc "c" (ctx: rawptr, flow_change, head_error: f64, qlink, qnode, hlink: i32),
+	write_badvalve:       proc "c" (ctx: rawptr, link: i32),
+	write_control_action: proc "c" (ctx: rawptr, link, control: i32),
+	// check_rules evaluates the rules at clock time htime over the last dt
+	// seconds, acts on any that fire, and says whether one did.
+	check_rules:          proc "c" (ctx: rawptr, htime, dt: i64) -> b32,
 }
