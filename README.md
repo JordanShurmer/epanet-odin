@@ -462,4 +462,6 @@ A release tarball from <https://github.com/odin-lang/Odin/releases> works
 point `ODIN=` at the `odin` in it — the workflows do the same, with the
 release named at the top of each). So does building it: `apt install
 llvm-18-dev clang-18`, clone the repo at a `dev-YYYY-MM` tag, `make
-release-native`, and point `ODIN=` at the binary.
+release-native`, and point `ODIN=` at the binary. The wasm build links
+with LLVM's `wasm-ld`, which comes with the `lld` package (`apt install
+lld`, `brew install lld`); without it the harness skips the wasm road.

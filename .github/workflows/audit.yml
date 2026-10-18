@@ -37,6 +37,8 @@ jobs:
             | tar xz -C "$HOME/odin" --strip-components=1
           echo "$HOME/odin" >> "$GITHUB_PATH"
           "$HOME/odin/odin" version
+      - name: wasm-ld
+        run: sudo apt-get install -y lld
       - name: valgrind
         run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends valgrind
       - run: audit/audit.sh

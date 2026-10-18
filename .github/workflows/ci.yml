@@ -21,4 +21,6 @@ jobs:
             | tar xz -C "$HOME/odin" --strip-components=1
           echo "$HOME/odin" >> "$GITHUB_PATH"
           "$HOME/odin/odin" version
+      - name: wasm-ld
+        run: sudo apt-get install -y lld
       - run: harness/test.sh

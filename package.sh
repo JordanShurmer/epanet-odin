@@ -72,6 +72,7 @@ else
     bad "odin build run"
 fi
 mkdir -p "$P/wasm"
+command -v wasm-ld >/dev/null || usage "wasm-ld not found (the lld package; brew install lld on macOS): the wasm build needs it"
 if run "$ODIN" build wasm -target:freestanding_wasm32 -out:"$P/wasm/epanet.wasm" -no-entry-point -o:speed -vet -strict-style &&
         cp wasm/epanet.js "$P/wasm/"; then
     ok "wasm/epanet.wasm epanet.js"

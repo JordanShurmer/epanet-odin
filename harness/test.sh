@@ -155,8 +155,12 @@ note "odin build run inp check"
 run "$ODIN" build cmd/run -out:"$B/run-api" $ODINFLAGS -vet -strict-style || bad "odin build run"
 run "$ODIN" build cmd/inp -out:"$B/inp-api" $ODINFLAGS -vet -strict-style || bad "odin build inp"
 run "$ODIN" build cmd/check -out:"$B/check-api" $ODINFLAGS -vet -strict-style || bad "odin build check"
-note "odin build wasm"
-run "$ODIN" build wasm -target:freestanding_wasm32 -out:"$B/epanet.wasm" -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build wasm"
+# the wasm build needs LLVM's wasm-ld (the lld package); without it the
+# wasm road is skipped, not failed
+if command -v wasm-ld >/dev/null; then
+    note "odin build wasm"
+    run "$ODIN" build wasm -target:freestanding_wasm32 -out:"$B/epanet.wasm" -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build wasm"
+fi
 note "odin build api"
 run "$ODIN" build api -build-mode:static -out:"$B/libepanet-api.a" \
     -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build api"
@@ -394,7 +398,9 @@ while IFS= read -r line; do
 done <"$B/check.txt"
 
 # the wasm build's road: the same network through epanet.js, in Node
-if command -v node >/dev/null; then
+if ! command -v wasm-ld >/dev/null; then
+    skip "wasm bare road (no wasm-ld: install lld)"
+elif command -v node >/dev/null; then
     "$B/check-api" --reference >"$B/check.ref.txt" 2>&1
     if node wasm/check.mjs "$B/epanet.wasm" >"$B/check.wasm.txt" 2>"$B/check.wasm.err"; then
         if cmp -s "$B/check.ref.txt" "$B/check.wasm.txt"; then
