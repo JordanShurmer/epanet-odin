@@ -171,6 +171,23 @@ Project_C :: struct {
 // EPANET's in place, the scalars are copied in and (unview) back out.
 Views :: Project
 
+// The engine keeps a little scratch with its solvers — the rule
+// engine's list of waiting actions, the quality sort's in-degrees and
+// stack — which the bridge has no struct for: one buffer each for the
+// process, grown as a view needs.
+@(private = "file")
+pending_buf: []Pending
+@(private = "file")
+indegree_buf, stack_buf: []i32
+
+view_buffer :: proc(buf: ^[]$T, n: int) -> []T {
+	if len(buf^) < n {
+		delete(buf^)
+		buf^ = make([]T, n)
+	}
+	return buf^
+}
+
 // cstrings: a C string table as Odin strings, from the temp allocator.
 cstrings :: proc(a: [^]cstring, n: int) -> []string {
 	out := make([]string, n, context.temp_allocator)
@@ -271,6 +288,7 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 		status = ([^]Status)(h.status)[:nl + 1], old_status = ([^]Status)(h.old_status)[:nl + nt + 1],
 		p = h.p[:nl + 1], y = h.y[:nl + 1],
 		tank_volume = h.tank_volume[:nt + 1], energy = h.energy[:np + 1],
+		pending = view_buffer(&pending_buf, nac + 1),
 	}
 	if q := p.qual; q != nil {
 		v.q = {
@@ -282,6 +300,7 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 			node_qual = q.node_qual[:nn + 1], tank_c = q.tank_c[:nt + 1], link_rc = q.link_rc[:nl + 1],
 			pipe_rate = q.pipe_rate[:nl + 1], source_mass = q.source_mass[:nn + 1],
 			flow_dir = q.flow_dir[:nl + 1], sorted = q.sorted[:nn + 1],
+			indegree = view_buffer(&indegree_buf, nn + 1), stack = view_buffer(&stack_buf, nn + 1),
 			wbulk = q.wbulk, wwall = q.wwall, wtank = q.wtank, wsource = q.wsource, source_qual = q.source_qual,
 			balance = {q.initial, q.inflow, q.outflow, q.reacted, q.final, q.ratio, int(q.seg_count)},
 			segs = q.segs,
@@ -717,9 +736,9 @@ odin_avgqual :: proc "c" (p: ^Project_C, k: c.int) -> f64 {
 @(export, link_name = "odin_segments")
 odin_segments :: proc "c" (s: ^Segments, k: c.int, v, cq: [^]f64, max: c.int) -> c.int {
 	n: c.int = 0
-	for seg := s.first[k]; seg != 0 && n < max; seg = s.prev[seg] {
-		v[n] = s.v[seg]
-		cq[n] = s.c[seg]
+	for seg := s.first[k]; seg != 0 && n < max; seg = s.at[seg].prev {
+		v[n] = s.at[seg].v
+		cq[n] = s.at[seg].c
 		n += 1
 	}
 	return n

@@ -33,9 +33,15 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr
 	iter = 1
 	for iter <= max_trials {
 		// A·H = F for the heads; H comes back in f.
+		t0 := prof_begin()
 		headloss_coeffs(net, hyd)
+		prof_end(.headloss_coeffs, t0)
+		t0 = prof_begin()
 		matrix_coeffs(net, hyd, m)
+		prof_end(.matrix_coeffs, t0)
+		t0 = prof_begin()
 		errcode = linsolve(m, net.njuncs)
+		prof_end(.linsolve, t0)
 
 		// Ill-conditioned: a control valve at that row is fixed and we
 		// go round again; anything else ends it with no solution.
@@ -44,11 +50,14 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr
 			break
 		}
 
+		t0 = prof_begin()
 		for i in 1 ..= net.njuncs do hyd.head[i] = m.f[m.row[i]]
 		relerr = new_flows(net, hyd, pr, &bal)
+		prof_end(.new_flows, t0)
 		if hyd.status_report do writerelerr(pr, iter, relerr)
 
 		// Damping and the valve checks.
+		t0 = prof_begin()
 		hyd.relax = 1
 		valve_change := false
 		if hyd.damp_limit > 0 {
@@ -60,7 +69,13 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr
 			valve_change = valve_status(net, hyd, pr)
 		}
 
-		if has_converged(net, hyd, pr, relerr, &bal) {
+		prof_end(.status, t0)
+
+		t0 = prof_begin()
+		converged := has_converged(net, hyd, pr, relerr, &bal)
+		prof_end(.converge, t0)
+		t0 = prof_begin()
+		if converged {
 			if iter > hyd.max_iter do break
 			stat_change := valve_change
 			if link_status(net, hyd, pr) do stat_change = true
@@ -71,6 +86,7 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr
 			link_status(net, hyd, pr)
 			next_check += hyd.check_freq
 		}
+		prof_end(.status, t0)
 		iter += 1
 	}
 

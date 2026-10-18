@@ -56,6 +56,8 @@ epanet/         the Odin package `epanet` — the rewrite
   numbers.odin    a number read by strtod; numbers_wasm.odin: by strconv
   arena.odin      a project's growing arena, and File; arena_wasm.odin: a block
                   arena over the wasm heap
+  prof.odin       the engine's stopwatch, on with -define:PROF=true: the phases
+                  of a step, for cmd/prof; prof_wasm.odin: no clock, nothing
   report_wasm.odin  what the step would say to a report, with nowhere to say it
   edit.odin       the project edited after it is read: tables that grow, a
                   node, link, demand, pattern, curve, control or rule added or
@@ -76,6 +78,8 @@ cmd/dumpnet/    reads an .inp with the Odin reader and prints the project
 cmd/run/        runs an .inp through the Odin API and prints what harness/run.c prints
 cmd/inp/        reads an .inp as a Model and writes it back
 cmd/check/      the Odin API's own proofs: networks laid in code, two roads to one answer
+cmd/prof/       the Odin engine's hot path and memory on one network: the stages,
+                the phases of a step, the arena, the segments, the allocators — see Profiling
 wasm/           the engine for JavaScript
   epanet.odin     the exports: a Sim made, rows added, the column table, step
   epanet.js       the loader and the typed-array views over the columns
@@ -92,10 +96,13 @@ harness/        the plug-in validation
                   run, written as .inp and read back — on each build
   dumpnet.c       the twin of cmd/dumpnet over EPANET's own reader
   fixtures/       small networks that reach the branches the real ones do not
+  grid.sh         a generated N×N grid, one steady state or days of them
   out.sh          the ✓/✗ output vocabulary the script speaks
 audit/          the port measured against EPANET — see Audit below
   audit.sh        harness, sources, builds, bench, valgrind, coverage → build/audit/index.html
   bench.c         one network through the whole toolkit, timed phase by phase
+  prof.sh         the pure Odin engine on its own: cmd/prof on every network,
+                  callgrind and memcheck beside — see Profiling
   loc.py          lines, functions, decisions and depth per file, both sides
   render.py       the files read, the summary printed, the page written
   odin-runtime.supp  what memcheck says about Odin's own allocator
@@ -418,6 +425,67 @@ font if installed, else fetched), light and dark. `.github/workflows/audit.yml`
 runs it on every push to `main` and publishes it at
 <https://jordanshurmer.github.io/epanet-odin/>. Needs python3; valgrind and
 llvm-cov are optional and a run without them says so.
+
+## Profiling — the engine on its own
+
+```sh
+audit/prof.sh                # cmd/prof on every network → build/prof/
+audit/prof.sh callgrind      # + instructions per proc (valgrind)
+audit/prof.sh memcheck       # + leaks and errors on the step path
+audit/prof.sh save before    # keep this run's figures as build/prof/before/
+audit/prof.sh diff before    # a saved run beside the last one
+NETWORKS="Net3 grid40x3d" REPS=10 audit/prof.sh
+```
+
+The audit measures the port against EPANET; this measures the Odin
+rewrite against itself, the way a program drives it: `load`,
+`sim_from_model`, `sim_step` to the end. `cmd/prof` prints, for one
+network, the time of each stage (load, the engine built on the first
+step, the steps), then — built with `-define:PROF=true` — the phases of
+a step from `epanet/prof.odin` (the coefficients, the solve, the flow
+corrections, the status checks, the quality transport and reactions,
+the copies in and out), each with its calls, its share and its mean;
+then memory: the project's arena and whether the steps grew it, the
+segment store, what the Sim's allocator and the temporary allocator
+were asked for during the steps (a step that allocates is a smell), and
+the resident set. The stopwatch is the cycle counter, calibrated over
+the run, so a microsecond phase is measured and not swamped; off, it
+compiles to nothing. `audit/prof.sh` runs it on EPANET's examples, the
+fixtures that run, and two grids from `harness/grid.sh`: `grid40`, one
+steady state of 1,600 junctions (the solver), and `grid40x3d`, the same
+for three days by the hour with a decaying chemical (the step path and
+the segments in their steady state). `callgrind` puts an instruction
+count on every proc; `memcheck` says what leaks.
+
+What it found, and what changed for it (every result still bit for bit
+EPANET's, and the harness says so):
+
+- `copy_in` recomputed every link's resistance every step, two `pow`
+  calls a pipe; now only when its size or roughness moved.
+- The wall reaction rate took the Schmidt number's power per pipe per
+  step; it is one number a step.
+- The quality sort and the rule engine took scratch from the temporary
+  allocator every step, which nothing freed on the toolkit's path: a
+  long run grew without bound. The scratch is the solver's now,
+  allocated when it opens.
+- The segment store was three dynamic arrays (volume, quality, link),
+  three cache lines a segment and three appends; it is one array of
+  `Segment`, with room for two a chain before it grows. The chain
+  walks take one pointer per segment instead of indexing the store
+  three to five times, and run without bounds checks, as `linsolve`
+  does: the indexes are the store's own.
+- The matrix's coefficients sit in `aij` in the order the solver walks
+  them (`column_order`, after `create_sparse`, which keeps EPANET's
+  numbering for the shadow): a fifth fewer cache misses in the solve.
+- Opening a large network spent half its time in `fill_in` asking
+  whether two nodes were already linked by scanning a list; a marker
+  array answers it, in the same order.
+
+On the 1,600-junction grid a step is a quarter faster and the engine
+opens a third faster; on Net3 a step is a sixth faster. `linsolve` and
+the quality transport are what is left, and they are EPANET's
+algorithms over EPANET's data layout: a Cholesky on the junction graph
+and a walk of every segment, both bound by memory, not arithmetic.
 
 ## Releases
 

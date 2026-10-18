@@ -314,4 +314,7 @@ Hydraulics :: struct {
 	// tanks and pumps
 	tank_volume:               []f64,
 	energy:                    []Pump_Energy,
+
+	// rules: the actions waiting to be carried out (check_rules)
+	pending:                   []Pending,
 }

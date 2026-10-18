@@ -43,6 +43,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 . harness/out.sh
 . harness/same.sh
+. harness/grid.sh
 
 for a in "$@"; do
     debug_flag "$a" || usage "unknown argument: $a"
@@ -84,26 +85,7 @@ fi
 rm -rf "$B"
 mkdir -p "$B/c" "$B/odin"
 
-# A generated fixture the real networks are too small for: a 40×40 grid of
-# junctions (1600 rows, 3120 pipes) fed from one reservoir, with a strip of
-# parallel pipes and a pump, so the ordering, the fill-in and the parallel-link
-# folding all have real work to do.
-grid_inp() {
-    awk -v n="$1" 'BEGIN {
-        print "[TITLE]\ngrid " n "x" n "\n\n[JUNCTIONS]"
-        for (i = 0; i < n; i++) for (j = 0; j < n; j++)
-            printf "J%d-%d %d %g\n", i, j, 500 - i - j, 0.3 + ((i * 7 + j * 3) % 5) / 10
-        print "\n[RESERVOIRS]\nR1 700\n\n[PIPES]"
-        for (i = 0; i < n; i++) for (j = 0; j < n; j++) {
-            if (j + 1 < n) printf "H%d-%d J%d-%d J%d-%d 800 8 110 0 Open\n", i, j, i, j, i, j + 1
-            if (i + 1 < n) printf "V%d-%d J%d-%d J%d-%d 800 8 110 0 Open\n", i, j, i, j, i + 1, j
-        }
-        for (j = 0; j + 1 < n; j += 3) printf "P%d J%d-%d J%d-%d 800 6 100 0 Open\n", j, 5, j, 5, j + 1
-        print "\n[PUMPS]\nPU1 R1 J0-0 HEAD C1\n\n[CURVES]\nC1 0 150\nC1 3000 100\nC1 6000 30"
-        print "\n[OPTIONS]\nUnits GPM\nHeadloss H-W\nTrials 60\nAccuracy 0.001"
-        print "\n[TIMES]\nDuration 0\n\n[END]"
-    }'
-}
+# A generated fixture the real networks are too small for (harness/grid.sh).
 grid_inp 40 >"$B/grid40.inp"
 FIXTURES="$FIXTURES $B/grid40.inp"
 
@@ -155,6 +137,7 @@ note "odin build run inp check"
 run "$ODIN" build cmd/run -out:"$B/run-api" $ODINFLAGS -vet -strict-style || bad "odin build run"
 run "$ODIN" build cmd/inp -out:"$B/inp-api" $ODINFLAGS -vet -strict-style || bad "odin build inp"
 run "$ODIN" build cmd/check -out:"$B/check-api" $ODINFLAGS -vet -strict-style || bad "odin build check"
+run "$ODIN" build cmd/prof -out:"$B/prof-api" $ODINFLAGS -define:PROF=true -vet -strict-style || bad "odin build prof"
 # the wasm build needs LLVM's wasm-ld (the lld package); without it the
 # wasm road is skipped, not failed
 if command -v wasm-ld >/dev/null; then
@@ -170,7 +153,7 @@ run $CC $CFLAGS "$B/rebuild.o" "$B/libepanet-api.a" -lm -o "$B/rebuild-pure" || 
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
 [ "$_fail" -eq 0 ] || { tally "epanet-odin"; exit 1; }
-ok "build c odin shadow pure dumpnet rebuild run inp check wasm"
+ok "build c odin shadow pure dumpnet rebuild run inp check prof wasm"
 
 # ── compare ─────────────────────────────────────────────────────────────
 # (same / same_bin from harness/same.sh: cmp first, then within TOL)

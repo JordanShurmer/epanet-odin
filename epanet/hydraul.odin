@@ -608,8 +608,10 @@ init_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, init
 // network. Returns the error or warning code.
 run_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, t: ^Times, pr: ^Project) -> (now: i64, errcode: int) {
 	now = t.htime
+	t0 := prof_begin()
 	demands(net, hyd, t)
 	controls(net, hyd, t, pr)
+	prof_end(.demands, t0)
 	iter, relerr, err := hydsolve(net, hyd, m, pr)
 	errcode = err
 	if errcode == 0 {

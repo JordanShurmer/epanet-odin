@@ -72,6 +72,7 @@ open_hyd :: proc(p: ^Project) -> int {
 	if errcode := validate_project(p); errcode > 0 do return errcode
 	nn, nl, nt := net.nnodes, net.nlinks, net.ntanks
 	sp := create_sparse(Graph{nnodes = nn, njuncs = net.njuncs, nlinks = nl, n1 = net.n1, n2 = net.n2})
+	column_order(&sp, net.njuncs, nl)
 	p.m = {
 		order = sp.order, row = sp.row, ndx = sp.ndx,
 		xlnz = sp.xlnz, nzsub = sp.nzsub, lnz = sp.lnz,
@@ -83,6 +84,7 @@ open_hyd :: proc(p: ^Project) -> int {
 	hyd.y = make([]f64, nl + 1)
 	hyd.xflow = make([]f64, max(nn, nl) + 1)
 	hyd.old_status = make([]Status, nl + nt + 1)
+	hyd.pending = make([]Pending, len(net.action_link))
 	build_adjlists(net)
 	if errcode := unlinked(p); errcode != 0 {
 		close_hyd(p)
@@ -92,14 +94,41 @@ open_hyd :: proc(p: ^Project) -> int {
 	return 0
 }
 
+// column_order renumbers the coefficient slots so that the stored
+// nonzeros sit in aij in the order linsolve walks them: lnz becomes the
+// identity and the solver's inner loops read aij sequentially instead of
+// gathering. A link's slot follows through ndx (parallel links share
+// one); a link whose coefficient is not in the matrix, one end being a
+// tank, gets a slot after the matrix's, written by matrix_coeffs and
+// read by nobody. (EPANET numbers the slots by link, which the bridge's
+// shadow compares, so create_sparse keeps that numbering and this is
+// done after.)
+column_order :: proc(sp: ^Sparse, njuncs, nlinks: int) {
+	nnz := int(sp.xlnz[njuncs + 1]) - 1
+	slot := make([]i32, sp.ncoeffs + 1, context.temp_allocator) // old slot -> new
+	defer delete(slot, context.temp_allocator)
+	for s in 1 ..= nnz {
+		slot[sp.lnz[s]] = i32(s)
+		sp.lnz[s] = i32(s)
+	}
+	next := i32(nnz)
+	for k in 1 ..= nlinks {
+		if slot[sp.ndx[k]] == 0 {
+			next += 1
+			slot[sp.ndx[k]] = next
+		}
+		sp.ndx[k] = slot[sp.ndx[k]]
+	}
+}
+
 close_hyd :: proc(p: ^Project) {
 	m, hyd := &p.m, &p.hyd
 	delete(m.order); delete(m.row); delete(m.ndx)
 	delete(m.xlnz); delete(m.nzsub); delete(m.lnz)
 	delete(m.aii); delete(m.aij); delete(m.f); delete(m.temp); delete(m.link); delete(m.first)
 	m^ = {}
-	delete(hyd.p); delete(hyd.y); delete(hyd.xflow); delete(hyd.old_status)
-	hyd.p, hyd.y, hyd.xflow, hyd.old_status = nil, nil, nil, nil
+	delete(hyd.p); delete(hyd.y); delete(hyd.xflow); delete(hyd.old_status); delete(hyd.pending)
+	hyd.p, hyd.y, hyd.xflow, hyd.old_status, hyd.pending = nil, nil, nil, nil, nil
 	free_adjlists(&p.net)
 }
 
@@ -185,21 +214,31 @@ open_qual :: proc(p: ^Project) -> int {
 		build_adjlists(net)
 		if errcode := unlinked(p); errcode != 0 do return errcode
 	}
+	alloc_qual(net, q)
+	return 0
+}
+
+// alloc_qual gives the quality solver its per-run arrays over net and
+// its segment store (the Sim gives every chemical its own).
+alloc_qual :: proc(net: ^Network, q: ^Quality) {
 	nl, nn, nt := net.nlinks, net.nnodes, net.ntanks
 	q.out_of_memory = false
 	q.flow_dir = make([]i32, nl + 1)
 	q.pipe_rate = make([]f64, nl + 1)
 	q.link_rc = make([]f64, nl + 1)
-	q.sorted = make([]i32, nl + nt + 1)
+	q.sorted = make([]i32, nn + 1)
+	q.indegree = make([]i32, nn + 1)
+	q.stack = make([]i32, nn + 1)
 	q.source_mass = make([]f64, nn + 1)
 	q.segs = segments_make(nl + nt)
-	return 0
 }
 
 close_qual :: proc(p: ^Project) {
 	q := &p.q
 	delete(q.flow_dir); delete(q.pipe_rate); delete(q.link_rc); delete(q.sorted); delete(q.source_mass)
+	delete(q.indegree); delete(q.stack)
 	q.flow_dir, q.pipe_rate, q.link_rc, q.sorted, q.source_mass = nil, nil, nil, nil, nil
+	q.indegree, q.stack = nil, nil
 	if q.segs != nil do segments_delete(q.segs)
 	q.segs = nil
 }

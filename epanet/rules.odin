@@ -16,7 +16,12 @@ Pending :: struct {
 // links actually changed.
 check_rules :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project, dt: i64) -> int {
 	time1 := t.htime - dt + 1 // start of the interval
-	list := make([]Pending, len(net.action_link), context.temp_allocator)
+	if len(hyd.pending) < len(net.action_link) {
+		// rules were added since the solver opened
+		delete(hyd.pending)
+		hyd.pending = make([]Pending, len(net.action_link))
+	}
+	list := hyd.pending
 	n := 0
 	for i in 1 ..= net.nrules {
 		if !net.rule_enabled[i] do continue

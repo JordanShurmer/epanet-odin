@@ -139,10 +139,7 @@ delete_results :: proc(r: ^Results, allocator := context.allocator) {
 	delete(r.warnings)
 	delete(r.energy)
 	delete(r.mass_balance)
-	delete(r.ids.node)
-	delete(r.ids.link)
-	delete(r.ids.node_index)
-	delete(r.ids.link_index)
+	delete_ids(&r.ids)
 	r^ = {}
 }
 

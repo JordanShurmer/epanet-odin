@@ -457,6 +457,14 @@ Ids :: struct {
 	node_index, link_index: map[string]int,
 }
 
+delete_ids :: proc(ids: ^Ids, allocator := context.allocator) {
+	delete(ids.node, allocator)
+	delete(ids.link, allocator)
+	delete(ids.node_index)
+	delete(ids.link_index)
+	ids^ = {}
+}
+
 // sim_from_model is the one conversion: entities to columns (the nodes
 // in the model's order, the links in theirs), the model's patterns,
 // curves, controls and rules kept inside to play each step, its quality
@@ -900,13 +908,7 @@ rebuild :: proc(sim: ^Sim) -> Error {
 			}
 			for tk in 1 ..= net.ntanks do cs.tank_kb[tk] = ch.decay / SEC_PER_DAY
 		}
-		cs.q.out_of_memory = false
-		cs.q.flow_dir = make([]i32, net.nlinks + 1)
-		cs.q.pipe_rate = make([]f64, net.nlinks + 1)
-		cs.q.link_rc = make([]f64, net.nlinks + 1)
-		cs.q.sorted = make([]i32, net.nlinks + net.ntanks + 1)
-		cs.q.source_mass = make([]f64, net.nnodes + 1)
-		cs.q.segs = segments_make(net.nlinks + net.ntanks)
+		alloc_qual(net, &cs.q)
 		swap_chemical(p, cs)
 		init_qual(net, &p.hyd, &cs.q)
 	}
@@ -1040,15 +1042,22 @@ copy_in :: proc "contextless" (sim: ^Sim) {
 		k := int(sim.link_engine[row])
 		if k == 0 do continue
 		lt := net.link_type[k]
+		// the resistance follows the size and roughness: computed again
+		// only when they moved (two pow calls per pipe otherwise)
+		changed := false
 		if lt != .PUMP {
-			net.diam[k] = l.diameter[row] / u[.DIAM]
-			d2 := net.diam[k] * net.diam[k]
-			net.km[k] = 0.02517 * l.minor_loss[row] / d2 / d2
+			diam := l.diameter[row] / u[.DIAM]
+			d2 := diam * diam
+			km := 0.02517 * l.minor_loss[row] / d2 / d2
+			if diam != net.diam[k] || km != net.km[k] do changed = true
+			net.diam[k], net.km[k] = diam, km
 		}
 		if lt <= .PIPE {
-			net.len[k] = l.length[row] / u[.LENGTH]
-			net.kc[k] = l.roughness[row]
-			if hyd.formflag == .DW do net.kc[k] /= 1000 * u[.ELEV]
+			length := l.length[row] / u[.LENGTH]
+			kc := l.roughness[row]
+			if hyd.formflag == .DW do kc /= 1000 * u[.ELEV]
+			if length != net.len[k] || kc != net.kc[k] do changed = true
+			net.len[k], net.kc[k] = length, kc
 		} else if lt == .PUMP {
 			pm := net.link_pump[k]
 			if net.pump_type[pm] == .CONST_HP && l.pump_power[row] > 0 {
@@ -1056,7 +1065,7 @@ copy_in :: proc "contextless" (sim: ^Sim) {
 				net.pump_r[pm] = -8.814 * net.km[k] / u[.POWER]
 			}
 		}
-		resist_coeff(net, hyd, k)
+		if changed do resist_coeff(net, hyd, k)
 		if l.status[row] != sim.prev_status[row] {
 			sim.prev_status[row] = l.status[row]
 			#partial switch l.status[row] {
@@ -1185,7 +1194,11 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 	p := sim.engine
 	context.allocator = arena_allocator(&p.arena)
 	net, hyd, t := &p.net, &p.hyd, &p.times
+	t_step := prof_begin()
+	defer prof_end(.step, t_step)
+	t0 := prof_begin()
 	copy_in(sim)
+	prof_end(.copy_in, t0)
 	_, errcode := run_hyd(net, hyd, &p.m, t, p)
 	if errcode > 6 {
 		sim.warn = .None
@@ -1199,14 +1212,20 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 		t.rtime += t.rstep
 	}
 	if t.qtime < t.dur {
+		t0 = prof_begin()
 		for &cs in sim.chems {
 			swap_chemical(p, &cs)
 			if sortcode := new_hydraulics(net, hyd, &cs.q); sortcode != 0 do return 0, warn, Error(sortcode)
 		}
+		prof_end(.new_hydraulics, t0)
 	}
+	t0 = prof_begin()
 	copy_out(sim)
+	prof_end(.copy_out, t0)
+	t0 = prof_begin()
 	hydstep, _ := next_hyd(net, hyd, t, p)
 	levels_out(sim)
+	prof_end(.next_hyd, t0)
 	qstep: i64 = 0
 	if t.htime <= t.dur do qstep = t.htime - t.qtime
 	for ci in 0 ..< len(sim.chems) {
@@ -1221,7 +1240,9 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 			}
 			if cs.q.out_of_memory do return 0, warn, .Out_Of_Memory
 		}
+		t0 = prof_begin()
 		eval_mass_balance(net, &cs.q)
+		prof_end(.mass_balance, t0)
 		sim.balance[ci] = cs.q.balance
 	}
 	t.qtime += qstep

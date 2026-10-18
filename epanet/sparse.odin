@@ -45,13 +45,6 @@ adj_push :: proc(a: ^Adj, at: int, node, link: i32) {
 	a.head[at] = i32(len(a.node) - 1)
 }
 
-adj_linked :: proc "contextless" (a: ^Adj, i, j: i32) -> bool {
-	for e := a.head[i]; e != 0; e = a.next[e] {
-		if a.node[e] == j do return true
-	}
-	return false
-}
-
 // create_sparse builds Sparse for g. The scratch it needs is freed; the
 // arrays in the result are the caller's (allocator).
 create_sparse :: proc(g: Graph, allocator := context.allocator) -> (sp: Sparse) {
@@ -135,6 +128,11 @@ reorder_nodes :: proc(g: Graph, a: ^Adj, order, row: []i32) {
 // eliminating the junctions in order will create: when row k goes, every
 // pair of its still-active neighbours that is not yet linked becomes one.
 // Returns the total coefficient count.
+//
+// Whether inode and jnode are linked is read off a marker array:
+// inode's neighbours are stamped once, and a new link stamps as it is
+// made, instead of scanning inode's list for every jnode (EPANET's way,
+// which was half the cost of opening a large network).
 fill_in :: proc(g: Graph, a: ^Adj, order: []i32) -> int {
 	degree := make([]i32, g.nnodes + 1, context.temp_allocator)
 	for k in 1 ..= g.njuncs {
@@ -142,6 +140,8 @@ fill_in :: proc(g: Graph, a: ^Adj, order: []i32) -> int {
 			if a.node[e] > 0 do degree[k] += 1
 		}
 	}
+	mark := make([]i32, g.nnodes + 1, context.temp_allocator) // mark[j] == stamp: j is inode's neighbour
+	stamp: i32
 	ncoeffs := g.nlinks
 	for k in 1 ..= g.njuncs {
 		knode := order[k]
@@ -149,11 +149,14 @@ fill_in :: proc(g: Graph, a: ^Adj, order: []i32) -> int {
 			inode := a.node[e]
 			if inode <= 0 || degree[inode] <= 0 do continue
 			degree[inode] -= 1
+			stamp += 1
+			for n := a.head[inode]; n != 0; n = a.next[n] do mark[a.node[n]] = stamp
 			// Link inode to every active neighbour listed after it.
 			for f := a.next[e]; f != 0; f = a.next[f] {
 				jnode := a.node[f]
 				if jnode <= 0 || degree[jnode] <= 0 do continue
-				if adj_linked(a, inode, jnode) do continue
+				if mark[jnode] == stamp do continue
+				mark[jnode] = stamp
 				ncoeffs += 1
 				adj_push(a, int(inode), jnode, i32(ncoeffs))
 				adj_push(a, int(jnode), inode, i32(ncoeffs))

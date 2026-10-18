@@ -37,7 +37,11 @@ Smatrix :: struct {
 // The column-by-column scheme: link[k] chains the columns whose next
 // unused entry falls in row j, first[k] says which entry that is, and
 // temp accumulates column j's modifications before they are applied.
-linsolve :: proc "contextless" (m: ^Smatrix, n: int) -> int {
+//
+// The index arrays are create_sparse's (or EPANET's, through the
+// bridge): every entry is in range by construction, and this is the
+// engine's hottest loop, so it runs without the bounds checks.
+linsolve :: proc "contextless" (m: ^Smatrix, n: int) -> int #no_bounds_check {
 	aii, aij, b, temp := m.aii, m.aij, m.f, m.temp
 	xlnz, nzsub, lnz, link, first := m.xlnz, m.nzsub, m.lnz, m.link, m.first
 
