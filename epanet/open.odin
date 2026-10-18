@@ -16,6 +16,7 @@ build_adjlists :: proc(net: ^Network) {
 	net.adj_link = make([]i32, 2 * nl + 1)
 	net.adj_node = make([]i32, 2 * nl + 1)
 	degree := make([]i32, nn + 2, context.temp_allocator)
+	defer delete(degree, context.temp_allocator)
 	for k in 1 ..= nl {
 		degree[net.n1[k]] += 1
 		degree[net.n2[k]] += 1
@@ -27,6 +28,7 @@ build_adjlists :: proc(net: ^Network) {
 	}
 	net.adj_first[nn + 1] = at
 	fill := make([]i32, nn + 1, context.temp_allocator)
+	defer delete(fill, context.temp_allocator)
 	copy(fill, net.adj_first[:nn + 1])
 	for k := nl; k >= 1; k -= 1 {
 		i, j := net.n1[k], net.n2[k]
@@ -62,7 +64,7 @@ unlinked :: proc(p: ^Project) -> int {
 		}
 		if count >= 10 do break
 	}
-	return count > 0 ? 233 : 0
+	return count > 0 ? int(Error.Unconnected_Nodes) : 0
 }
 
 // open_hyd readies the hydraulic solver: the checks, the matrix shape,
@@ -82,7 +84,7 @@ open_hyd :: proc(p: ^Project) -> int {
 	}
 	hyd.p = make([]f64, nl + 1)
 	hyd.y = make([]f64, nl + 1)
-	hyd.xflow = make([]f64, max(nn, nl) + 1)
+	hyd.xflow = make([]f64, nn + 1)
 	hyd.old_status = make([]Status, nl + nt + 1)
 	hyd.pending = make([]Pending, len(net.action_link))
 	build_adjlists(net)
@@ -209,8 +211,8 @@ find_link_leakage :: proc "contextless" (p: ^Project, i: int) -> f64 {
 open_qual :: proc(p: ^Project) -> int {
 	net, q := &p.net, &p.q
 	if q.kind != .NONE && net.adj_first == nil {
-		if net.nnodes < 2 do return 223
-		if net.ntanks == 0 do return 224
+		if net.nnodes < 2 do return int(Error.Too_Few_Nodes)
+		if net.ntanks == 0 do return int(Error.No_Tanks)
 		build_adjlists(net)
 		if errcode := unlinked(p); errcode != 0 do return errcode
 	}
@@ -222,7 +224,6 @@ open_qual :: proc(p: ^Project) -> int {
 // its segment store (the Sim gives every chemical its own).
 alloc_qual :: proc(net: ^Network, q: ^Quality) {
 	nl, nn, nt := net.nlinks, net.nnodes, net.ntanks
-	q.out_of_memory = false
 	q.flow_dir = make([]i32, nl + 1)
 	q.pipe_rate = make([]f64, nl + 1)
 	q.link_rc = make([]f64, nl + 1)

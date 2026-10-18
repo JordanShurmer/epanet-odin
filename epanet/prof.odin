@@ -26,7 +26,8 @@ Prof_Phase :: enum {
 	linsolve,
 	new_flows,
 	converge, // has_converged: the head-loss balance, leakage and PDA checks
-	status, // valve_status, link_status, pswitch
+	valves, // the damping and valve_status, every trial
+	status, // link_status and pswitch, once converged or every check_freq trials
 	new_hydraulics, // quality: wall rates, flow directions, the sort
 	copy_out,
 	next_hyd, // energy, the time step, the tanks moved, the rules

@@ -45,8 +45,10 @@ adj_push :: proc(a: ^Adj, at: int, node, link: i32) {
 	a.head[at] = i32(len(a.node) - 1)
 }
 
-// create_sparse builds Sparse for g. The scratch it needs is freed; the
-// arrays in the result are the caller's (allocator).
+// create_sparse builds Sparse for g. The scratch it needs comes from
+// the temporary allocator and is freed whole at the end — the caller's
+// temporary allocations with it. The result's arrays are the caller's
+// (allocator).
 create_sparse :: proc(g: Graph, allocator := context.allocator) -> (sp: Sparse) {
 	context.allocator = allocator
 	sp.order = make([]i32, g.nnodes + 1)

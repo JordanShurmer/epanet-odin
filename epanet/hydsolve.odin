@@ -69,7 +69,7 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr
 			valve_change = valve_status(net, hyd, pr)
 		}
 
-		prof_end(.status, t0)
+		prof_end(.valves, t0)
 
 		t0 = prof_begin()
 		converged := has_converged(net, hyd, pr, relerr, &bal)
@@ -92,9 +92,11 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr
 
 	if errcode > 0 {
 		writehyderr(pr, int(m.order[errcode]))
-		errcode = 110
+		errcode = int(Error.Unsolvable)
 	}
 
+	// node_demand is everything leaving a junction, summed here once; at
+	// a tank it is the net inflow, which new_link_flows kept every trial
 	for i in 1 ..= net.njuncs {
 		hyd.node_demand[i] = hyd.demand_flow[i] + hyd.emitter_flow[i] + hyd.leak_flow[i]
 	}
@@ -107,7 +109,8 @@ hydsolve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix, pr
 }
 
 // bad_valve: does node n belong to an active PRV, PSV or FCV? Then that
-// valve's setting cannot be met: fix its status and say so.
+// valve's setting cannot be met: fix its status and say so. Only the
+// first valve on the node is looked at, as EPANET looks.
 bad_valve :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, n: int) -> bool {
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]

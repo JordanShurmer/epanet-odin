@@ -48,7 +48,6 @@ Quality :: struct {
 	bulk_order, wall_order, tank_order:        f64,
 	sc, bucf, tucf:                            f64, // Schmidt number, unit factors (from init)
 	reactive:                                  bool,
-	out_of_memory:                             bool,
 
 	node_qual:                                 []f64,
 	tank_c:                                    []f64,
@@ -151,7 +150,7 @@ init_segs :: proc(net: ^Network, q: ^Quality) {
 		s.first[k] = 0
 		s.last[k] = 0
 		add_seg(q, k, v, c)
-		if !q.out_of_memory && net.tank_mix[j] == .MIX2 {
+		if net.tank_mix[j] == .MIX2 {
 			v1 := max(0, v - net.tank_v1frac[j] * net.tank_vmax[j])
 			s.at[s.first[k]].v = v1
 			v = v - v1
@@ -231,7 +230,7 @@ rate_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality)
 	sc3 := c_pow(q.sc, 0.333) // the same for every pipe
 	for k in 1 ..= net.nlinks {
 		kw := net.link_kw[k]
-		if kw != 0 do kw = pipe_rate(net, hyd, q, k, sc3)
+		if kw != 0 do kw = wall_rate_coeff(net, hyd, q, k, sc3)
 		q.link_rc[k] = kw
 		q.pipe_rate[k] = 0
 	}
@@ -305,7 +304,7 @@ sort_nodes :: proc(net: ^Network, q: ^Quality) -> int {
 			}
 		}
 	}
-	return numsorted < net.nnodes ? 120 : 0
+	return numsorted < net.nnodes ? int(Error.Quality_Unsolvable) : 0
 }
 
 select_nonstack_node :: proc "contextless" (net: ^Network, q: ^Quality, numsorted: int, indegree: []i32) -> i32 {
@@ -578,10 +577,11 @@ react_tanks :: proc "contextless" (net: ^Network, q: ^Quality, t: ^Times, dt: i6
 	}
 }
 
-// pipe_rate: a pipe's wall reaction rate coefficient (first order) or
-// mass transfer coefficient (zero order) at the current flow; sc3 is
-// the Schmidt number to the 0.333.
-pipe_rate :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality, k: int, sc3: f64) -> f64 {
+// wall_rate_coeff: a pipe's wall reaction rate coefficient (first order)
+// or mass transfer coefficient (zero order) at the current flow; sc3 is
+// the Schmidt number to the 0.333. (EPANET's piperate; q.pipe_rate is
+// something else, the average reaction rate reported per pipe.)
+wall_rate_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality, k: int, sc3: f64) -> f64 {
 	d := net.diam[k]
 	if q.sc == 0 {
 		if q.wall_order == 0 do return BIG
@@ -681,6 +681,9 @@ wall_rate :: proc "contextless" (net: ^Network, q: ^Quality, c, d, kw0, kf0: f64
 
 // ── tanks ─────────────────────────────────────────────────────────────
 
+// mix_tank: the tank's quality after this step's flows, by its mixing
+// model. tank_mix1..4 keep EPANET's names: complete mix, two
+// compartments, first in first out, last in first out.
 mix_tank :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, n: int, volin, massin, volout: f64) -> f64 {
 	i := n - net.njuncs
 	vnet := volin - volout
@@ -772,25 +775,7 @@ tank_mix3 :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, i: int, vin, win
 	}
 	vout := vin - vnet
 	if hyd.tank_volume[i] >= net.tank_vmax[i] && vnet > 0 do vout = vin
-	vsum, wsum := 0.0, 0.0
-	for vout > 0 {
-		seg := s.first[k]
-		if seg == 0 do break
-		vseg := s.at[seg].v
-		vseg = min(vseg, vout)
-		if seg == s.last[k] do vseg = vout
-		vsum += vseg
-		wsum += s.at[seg].c * vseg
-		vout -= vseg
-		if vout >= 0 && vseg >= s.at[seg].v {
-			if s.at[seg].prev != 0 {
-				s.first[k] = s.at[seg].prev
-				recycle_seg(s, seg)
-			}
-		} else {
-			s.at[seg].v -= vseg
-		}
-	}
+	vsum, wsum := tank_drain(s, k, vout)
 	if vsum > 0 {
 		q.tank_c[i] = wsum / vsum
 	} else if s.first[k] == 0 {
@@ -818,51 +803,42 @@ tank_mix4 :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, i: int, vin, win
 		}
 		q.tank_c[i] = s.at[s.last[k]].c
 		if hyd.tank_volume[i] >= net.tank_vmax[i] {
-			wsum := 0.0
-			for vnet > 0 {
-				seg = s.first[k]
-				if seg == 0 do break
-				vseg := s.at[seg].v
-				vseg = min(vseg, vnet)
-				if seg == s.last[k] do vseg = vnet
-				wsum += s.at[seg].c * vseg
-				vnet -= vseg
-				if vnet >= 0 && vseg >= s.at[seg].v {
-					if s.at[seg].prev != 0 {
-						s.first[k] = s.at[seg].prev
-						recycle_seg(s, seg)
-					}
-				} else {
-					s.at[seg].v -= vseg
-				}
-			}
+			_, wsum := tank_drain(s, k, vnet)
 			q.balance.outflow += wsum
 		}
 	} else if vnet < 0 {
-		vsum, wsum := 0.0, 0.0
-		vnet = -vnet
 		reverse_segs(s, k)
-		for vnet > 0 {
-			seg = s.first[k]
-			if seg == 0 do break
-			vseg := s.at[seg].v
-			vseg = min(vseg, vnet)
-			if seg == s.last[k] do vseg = vnet
-			vsum += vseg
-			wsum += s.at[seg].c * vseg
-			vnet -= vseg
-			if vnet >= 0 && vseg >= s.at[seg].v {
-				if s.at[seg].prev != 0 {
-					s.first[k] = s.at[seg].prev
-					recycle_seg(s, seg)
-				}
-			} else {
-				s.at[seg].v -= vseg
-			}
-		}
+		vsum, wsum := tank_drain(s, k, -vnet)
 		reverse_segs(s, k)
 		q.tank_c[i] = (wsum + win) / (vsum + vin)
 	}
+}
+
+// tank_drain takes volume vol off the front of tank chain k and returns
+// what came out, volume and mass. The chain's last segment is never
+// dropped, only emptied (it is asked for the whole remainder), so a tank
+// always keeps one.
+tank_drain :: proc "contextless" (s: ^Segments, k: int, vol0: f64) -> (vsum, wsum: f64) #no_bounds_check {
+	vol := vol0
+	for vol > 0 {
+		i := s.first[k]
+		if i == 0 do break
+		seg := &s.at[i]
+		vseg := min(seg.v, vol)
+		if i == s.last[k] do vseg = vol
+		vsum += vseg
+		wsum += seg.c * vseg
+		vol -= vseg
+		if vol >= 0 && vseg >= seg.v {
+			if seg.prev != 0 {
+				s.first[k] = seg.prev
+				recycle_seg(s, i)
+			}
+		} else {
+			seg.v -= vseg
+		}
+	}
+	return
 }
 
 // ── readings ──────────────────────────────────────────────────────────

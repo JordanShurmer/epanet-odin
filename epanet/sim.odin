@@ -145,7 +145,7 @@ Sim :: struct {
 	out:       Node_Out, // written by the step
 	link_out:  Link_Out,
 	warn:      Warning, // the last step's
-	fault:     int, // the node or link an error was about, or -1
+	fault:     int, // the row an error was about, or -1 (from sim_from_model: the model entity)
 	at_report: bool, // the last step's results fell on one of the model's reporting times
 	balance:   []Mass_Balance, // per chemical, closed after every step
 
@@ -156,7 +156,6 @@ Sim :: struct {
 	node_engine:  []i32, // the engine's 1-based index per row, 0 = left out
 	link_engine:  []i32,
 	engine:       ^Project, // the project the step runs; nil until the first step, or when nothing reaches a junction
-	built:        bool, // the plan is made for the rows as they are
 	chems:        []Chem_State, // per chemical, in the project's arena
 	prev_status:  []Status, // what the step last saw: a change is applied, the rest left to the engine
 	prev_setting: []f64,
@@ -451,6 +450,11 @@ link_remove :: proc(sim: ^Sim, k: int) {
 
 // ── from a Model ──────────────────────────────────────────────────────
 
+// A Model's kinds as the Sim's, and a valve's type as a link kind.
+NODE_KIND_OF := #partial [Kind]Node_Kind{.JUNCTION = .JUNCTION, .RESERVOIR = .RESERVOIR, .TANK = .TANK}
+LINK_KIND_OF_VALVE := #partial [Link_Type]Link_Kind{.PRV = .PRV, .PSV = .PSV, .PBV = .PBV, .FCV = .FCV, .TCV = .TCV, .GPV = .GPV, .PCV = .PCV}
+VALVE_OF_LINK_KIND := #partial [Link_Kind]Link_Type{.PRV = .PRV, .PSV = .PSV, .PBV = .PBV, .FCV = .FCV, .TCV = .TCV, .GPV = .GPV, .PCV = .PCV}
+
 // Ids are the names a Model's components had, by row.
 Ids :: struct {
 	node, link:             []string,
@@ -500,7 +504,7 @@ sim_from_model :: proc(model: ^Model, allocator := context.allocator) -> (sim: S
 
 	for &e, ei in model.entities {
 		if e.kind > .TANK do continue
-		i := node_add(&sim, Node_Kind(int(e.kind) + 1))
+		i := node_add(&sim, NODE_KIND_OF[e.kind])
 		if e.kind == .TANK && e.diameter == 0 do sim.nodes.kind[i] = .RESERVOIR
 		if e.kind == .RESERVOIR && e.diameter > 0 do sim.nodes.kind[i] = .TANK
 		sim.node_entity[i] = i32(ei)
@@ -531,7 +535,7 @@ sim_from_model :: proc(model: ^Model, allocator := context.allocator) -> (sim: S
 		case .VALVE:
 			vt := e.valve
 			if vt < .PRV do vt = .PRV
-			kind = Link_Kind(int(vt) - int(Link_Type.PRV) + int(Link_Kind.PRV))
+			kind = LINK_KIND_OF_VALVE[vt]
 		case .JUNCTION, .RESERVOIR, .TANK:
 		}
 		k := link_add(&sim, kind, from, to)
@@ -595,39 +599,95 @@ sim_from_model :: proc(model: ^Model, allocator := context.allocator) -> (sim: S
 
 // rebuild makes the engine's project from the columns (and the model's
 // extras, when there is one): what a tank or reservoir reaches, the
-// engine's own numbering, the matrix shape, the solvers opened at the
-// clock. Returns the error, with sim.fault on the row.
+// effective model of those rows, the engine's own numbering, the matrix
+// shape, the solvers opened at the clock. Returns the error, with
+// sim.fault on the row.
 rebuild :: proc(sim: ^Sim) -> Error {
 	sim.rewire = false
-	sim.built = true
 	sim.fault = -1
 	free_engine(sim)
+	size_quality_columns(sim)
 	nn, nl := sim.nodes.count, sim.links.count
-	a := sim.allocator
-	nchem := len(sim.chemicals)
-	if len(sim.out.quality) != nchem {
-		for col in sim.out.quality do delete(col, a)
-		delete(sim.out.quality, a)
-		for col in sim.link_out.quality do delete(col, a)
-		delete(sim.link_out.quality, a)
-		delete(sim.balance, a)
-		sim.out.quality = make([][]f64, nchem, a)
-		sim.link_out.quality = make([][]f64, nchem, a)
-		for ci in 0 ..< nchem {
-			sim.out.quality[ci] = make([]f64, sim.node_cap, a)
-			sim.link_out.quality[ci] = make([]f64, sim.link_cap, a)
-		}
-		sim.balance = make([]Mass_Balance, nchem, a)
-	}
 	for i in 0 ..< nn do sim.node_engine[i] = 0
 	for k in 0 ..< nl do sim.link_engine[k] = 0
 
-	// reach: a breadth-first walk from every tank and reservoir over
-	// every link, whatever its status
+	// the plan is made in scratch; only the project outlives it
 	scratch: Arena
 	if !arena_init(&scratch) do return .Out_Of_Memory
 	defer arena_destroy(&scratch)
 	context.allocator = arena_allocator(&scratch)
+
+	reached := reach(sim)
+	njunc := 0
+	for i in 0 ..< nn do if reached[i] && sim.nodes.kind[i] == .JUNCTION do njunc += 1
+	for i in 0 ..< nn do sim.out.solved[i] = reached[i]
+	if njunc == 0 do return nil // nothing to solve: every step moves the clock only
+
+	eff, ent_row, nent_nodes, err := effective_model(sim, reached)
+	if err != nil do return err
+
+	// (the project struct itself comes from the Sim's allocator; its
+	// tables from its own arena)
+	context.allocator = sim.allocator
+	b := project_from_model(&eff)
+	if b.err != nil {
+		if b.p != nil do project_free(b.p)
+		if b.at >= 0 && b.at < len(ent_row) do sim.fault = ent_row[b.at]
+		return b.err
+	}
+	p := b.p
+	sim.engine = p
+	context.allocator = arena_allocator(&p.arena)
+	for j in 0 ..< nent_nodes do sim.node_engine[ent_row[j]] = b.node_index[j]
+	for j in nent_nodes ..< len(ent_row) do sim.link_engine[ent_row[j]] = b.link_index[j]
+
+	if errcode := open_hyd(p); errcode != 0 {
+		free_engine(sim)
+		return Error(errcode)
+	}
+	open_leakage(p)
+	init_hyd(&p.net, &p.hyd, &p.times, 0)
+	p.open_hflag = true
+	p.hyd.openqflag = true // next_hyd leaves rtime and qtime to sim_step, which keeps them itself
+	t := &p.times
+	t.htime = i64(sim.t)
+	t.qtime = i64(sim.t)
+	t.rtime = t.rstart
+	for t.rtime < t.htime do t.rtime += t.rstep
+	open_chemicals(sim, p)
+
+	for k in 0 ..< nl {
+		sim.prev_status[k] = sim.links.status[k]
+		sim.prev_setting[k] = sim.links.setting[k]
+	}
+	for i in 0 ..< nn do sim.prev_level[i] = sim.nodes.level[i]
+	return nil
+}
+
+// size_quality_columns gives the quality result columns and the balance
+// one row per chemical, when the count changed.
+size_quality_columns :: proc(sim: ^Sim) {
+	a := sim.allocator
+	nchem := len(sim.chemicals)
+	if len(sim.out.quality) == nchem do return
+	for col in sim.out.quality do delete(col, a)
+	delete(sim.out.quality, a)
+	for col in sim.link_out.quality do delete(col, a)
+	delete(sim.link_out.quality, a)
+	delete(sim.balance, a)
+	sim.out.quality = make([][]f64, nchem, a)
+	sim.link_out.quality = make([][]f64, nchem, a)
+	for ci in 0 ..< nchem {
+		sim.out.quality[ci] = make([]f64, sim.node_cap, a)
+		sim.link_out.quality[ci] = make([]f64, sim.link_cap, a)
+	}
+	sim.balance = make([]Mass_Balance, nchem, a)
+}
+
+// reach: which rows a tank or reservoir reaches, by a breadth-first walk
+// over every link, whatever its status. Scratch from context.allocator.
+reach :: proc(sim: ^Sim) -> []bool {
+	nn, nl := sim.nodes.count, sim.links.count
 	reached := make([]bool, nn)
 	degree := make([]int, nn + 1)
 	for k in 0 ..< nl {
@@ -668,16 +728,17 @@ rebuild :: proc(sim: ^Sim) -> Error {
 			}
 		}
 	}
-	njunc := 0
-	for i in 0 ..< nn do if reached[i] && sim.nodes.kind[i] == .JUNCTION do njunc += 1
-	for i in 0 ..< nn do sim.out.solved[i] = reached[i]
-	if njunc == 0 {
-		// nothing to solve: every step moves the clock only
-		return nil
-	}
+	return reached
+}
 
-	// the effective model: the rows as entities, the model's extras
-	eff: Model
+// effective_model is the reached rows as a Model the reader could have
+// made: the model's own entities where a row came from one, with the
+// column's values over them; the model's patterns, curves and rules;
+// its controls less those on what is not there; chemical 0 as its
+// quality. ent_row says which row each entity is, nodes then links
+// (nent_nodes of them). Everything from context.allocator.
+effective_model :: proc(sim: ^Sim, reached: []bool) -> (eff: Model, ent_row: []int, nent_nodes: int, err: Error) {
+	nn, nl := sim.nodes.count, sim.links.count
 	if sim.model != nil {
 		eff = sim.model^
 		eff.aux, eff.problems, eff.arena = nil, nil, nil
@@ -689,7 +750,7 @@ rebuild :: proc(sim: ^Sim) -> Error {
 	apply_sim_options(&eff.options, &eff.times, sim.options, sim.model == nil)
 	if sim.model == nil do eff.times.duration = BARE_DURATION
 	entities := make([dynamic]Entity)
-	ent_row := make([dynamic]int) // the row each effective entity is, nodes then links
+	rows := make([dynamic]int)
 	node_ids := make([]string, nn)
 	for i in 0 ..< nn {
 		if !reached[i] do continue
@@ -727,9 +788,9 @@ rebuild :: proc(sim: ^Sim) -> Error {
 		e.has_source = false
 		e.init_quality = 0
 		append(&entities, e)
-		append(&ent_row, i)
+		append(&rows, i)
 	}
-	nent_nodes := len(entities)
+	nent_nodes = len(entities)
 	curves := make([dynamic]Model_Curve)
 	append(&curves, ..eff.curves)
 	for k in 0 ..< nl {
@@ -756,7 +817,7 @@ rebuild :: proc(sim: ^Sim) -> Error {
 			if len(e.head_curve) == 0 && e.power == 0 {
 				if l.pump_q[k] <= 0 || l.pump_h[k] <= 0 {
 					sim.fault = k
-					return .No_Pump_Curve
+					return eff, nil, 0, .No_Pump_Curve
 				}
 				cid := row_id("~p", k)
 				x := make([]f64, 1)
@@ -767,15 +828,16 @@ rebuild :: proc(sim: ^Sim) -> Error {
 			}
 		case .PRV, .PSV, .PBV, .FCV, .TCV, .GPV, .PCV:
 			e.kind = .VALVE
-			e.valve = Link_Type(int(l.kind[k]) - int(Link_Kind.PRV) + int(Link_Type.PRV))
+			e.valve = VALVE_OF_LINK_KIND[l.kind[k]]
 			e.setting = l.setting[k]
 		case .NONE:
 		}
 		append(&entities, e)
-		append(&ent_row, k)
+		append(&rows, k)
 	}
 	eff.entities = entities[:]
 	eff.curves = curves[:]
+	ent_row = rows[:]
 	// controls on what is not there are dropped; rules stay the model's
 	if sim.model != nil {
 		kept := make([dynamic]Control)
@@ -791,7 +853,7 @@ rebuild :: proc(sim: ^Sim) -> Error {
 		eff.controls = kept[:]
 	}
 	// chemical 0 is the project's own quality
-	if nchem > 0 {
+	if len(sim.chemicals) > 0 {
 		ch := &sim.chemicals[0]
 		switch ch.kind {
 		case .CHEM:
@@ -817,42 +879,19 @@ rebuild :: proc(sim: ^Sim) -> Error {
 	} else {
 		eff.options.quality = .NONE
 	}
+	return eff, ent_row, nent_nodes, nil
+}
 
-	// (the project struct itself comes from the Sim's allocator; its
-	// tables from its own arena)
-	context.allocator = sim.allocator
-	b := project_from_model(&eff)
-	if b.err != nil {
-		if b.p != nil do project_free(b.p)
-		if b.at >= 0 && b.at < len(ent_row) do sim.fault = ent_row[b.at]
-		return b.err
-	}
-	p := b.p
-	sim.engine = p
-	context.allocator = arena_allocator(&p.arena)
-	for j in 0 ..< nent_nodes do sim.node_engine[ent_row[j]] = b.node_index[j]
-	for j in nent_nodes ..< len(ent_row) do sim.link_engine[ent_row[j]] = b.link_index[j]
-
-	if errcode := open_hyd(p); errcode != 0 {
-		free_engine(sim)
-		return Error(errcode)
-	}
-	open_leakage(p)
-	init_hyd(&p.net, &p.hyd, &p.times, 0)
-	p.open_hflag = true
-	p.hyd.openqflag = true
-	t := &p.times
-	t.htime = i64(sim.t)
-	t.qtime = i64(sim.t)
-	t.rtime = t.rstart
-	for t.rtime < t.htime do t.rtime += t.rstep
-
-	// the chemicals: chemical 0 over the project's own arrays, the others
-	// over their own, every one with its own solver state
+// open_chemicals gives every chemical its solver state: chemical 0 over
+// the project's own arrays, the others over their own, each started at
+// its initial qualities. From the project's arena (context.allocator).
+open_chemicals :: proc(sim: ^Sim, p: ^Project) {
+	nn := sim.nodes.count
+	nchem := len(sim.chemicals)
+	net := &p.net
 	sim.chems = make([]Chem_State, nchem)
 	for ci in 0 ..< nchem {
 		cs := &sim.chems[ci]
-		net := &p.net
 		if ci == 0 {
 			cs.q = p.q
 			cs.ucf = p.ucf[.QUALITY]
@@ -913,13 +952,6 @@ rebuild :: proc(sim: ^Sim) -> Error {
 		init_qual(net, &p.hyd, &cs.q)
 	}
 	if nchem > 0 do swap_chemical(p, &sim.chems[0])
-
-	for k in 0 ..< nl {
-		sim.prev_status[k] = sim.links.status[k]
-		sim.prev_setting[k] = sim.links.setting[k]
-	}
-	for i in 0 ..< nn do sim.prev_level[i] = sim.nodes.level[i]
-	return nil
 }
 
 // free_engine gives the project back, under the allocator that made it.
@@ -1002,7 +1034,7 @@ copy_in :: proc "contextless" (sim: ^Sim) {
 			net.demand_base[net.demand_first[i]] = n.demand[row] / u[.DEMAND]
 			if n.emitter[row] > 0 {
 				net.ke[i] = kcf / c_pow(n.emitter[row], hyd.qexp)
-				if hyd.emitter_flow[i] == 0 do hyd.emitter_flow[i] = 1
+				if hyd.emitter_flow[i] == 0 do hyd.emitter_flow[i] = 1 // Newton's seed, as init_hyd gives
 			} else {
 				net.ke[i] = 0
 			}
@@ -1196,30 +1228,21 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 	net, hyd, t := &p.net, &p.hyd, &p.times
 	t_step := prof_begin()
 	defer prof_end(.step, t_step)
-	t0 := prof_begin()
-	copy_in(sim)
-	prof_end(.copy_in, t0)
-	_, errcode := run_hyd(net, hyd, &p.m, t, p)
-	if errcode > 6 {
-		sim.warn = .None
-		return 0, .None, Error(errcode)
-	}
-	warn = Warning(errcode)
-	sim.warn = warn
+	if warn, err = solve_here(sim); err != nil do return 0, warn, err
 	sim.at_report = false
 	if t.htime >= t.rtime {
 		sim.at_report = true
 		t.rtime += t.rstep
 	}
 	if t.qtime < t.dur {
-		t0 = prof_begin()
+		t0 := prof_begin()
 		for &cs in sim.chems {
 			swap_chemical(p, &cs)
 			if sortcode := new_hydraulics(net, hyd, &cs.q); sortcode != 0 do return 0, warn, Error(sortcode)
 		}
 		prof_end(.new_hydraulics, t0)
 	}
-	t0 = prof_begin()
+	t0 := prof_begin()
 	copy_out(sim)
 	prof_end(.copy_out, t0)
 	t0 = prof_begin()
@@ -1233,12 +1256,11 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 		if cs.q.kind != .NONE && qstep > 0 {
 			swap_chemical(p, cs)
 			done: i64 = 0
-			for !cs.q.out_of_memory && done < qstep {
+			for done < qstep {
 				d := min(t.qstep, qstep - done)
 				done += d
 				transport(net, hyd, t, &cs.q, d)
 			}
-			if cs.q.out_of_memory do return 0, warn, .Out_Of_Memory
 		}
 		t0 = prof_begin()
 		eval_mass_balance(net, &cs.q)
@@ -1259,20 +1281,29 @@ sim_solve :: proc(sim: ^Sim) -> (warn: Warning, err: Error) {
 	}
 	p := sim.engine
 	context.allocator = arena_allocator(&p.arena)
-	copy_in(sim)
-	_, errcode := run_hyd(&p.net, &p.hyd, &p.m, &p.times, p)
-	if errcode > 6 {
-		sim.warn = .None
-		return .None, Error(errcode)
-	}
-	warn = Warning(errcode)
-	sim.warn = warn
+	if warn, err = solve_here(sim); err != nil do return
 	copy_out(sim)
 	return warn, nil
 }
 
+// solve_here puts the columns in and solves the hydraulics at sim.t,
+// leaving the run's code as the step's warning, or as its error.
+solve_here :: proc(sim: ^Sim) -> (warn: Warning, err: Error) {
+	p := sim.engine
+	t0 := prof_begin()
+	copy_in(sim)
+	prof_end(.copy_in, t0)
+	_, errcode := run_hyd(&p.net, &p.hyd, &p.m, &p.times, p)
+	if errcode > LAST_WARNING {
+		sim.warn = .None
+		return .None, Error(errcode)
+	}
+	sim.warn = Warning(errcode)
+	return sim.warn, nil
+}
+
 // ready rebuilds the engine when the structure changed.
 ready :: proc(sim: ^Sim) -> Error {
-	if sim.rewire || !sim.built do return rebuild(sim)
+	if sim.rewire do return rebuild(sim)
 	return nil
 }

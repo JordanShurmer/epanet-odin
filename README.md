@@ -25,7 +25,7 @@ epanet/         the Odin package `epanet` — the rewrite
   smatrix.odin    numeric Cholesky: linsolve
   sparse.odin     symbolic factorization: createsparse
   genmmd.odin     minimum-degree ordering
-  network.odin    the model and solver state, one array per field; Hooks
+  network.odin    the model and solver state, one array per field
   hydcoeffs.odin  link coefficients and matrix assembly
   hydstatus.odin  status checks between trials
   hydsolve.odin   the Newton loop

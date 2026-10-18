@@ -105,7 +105,7 @@ main :: proc() {
 
 	best: Run
 	mean_steps_ns: i64
-	lines: [dynamic]Step_Line
+	lines := make([dynamic]Step_Line, sim_count.backing) // not counted as the steps' own
 	cycles0, wall0 := epanet.prof_now(), time.tick_now()
 	for r in 0 ..< reps {
 		epanet.prof_reset()

@@ -223,7 +223,8 @@ error_text :: proc "contextless" (err: Error) -> string {
 }
 
 // Warning is what a solve reports short of an error: EPANET's codes 1 to
-// 6, and one EPANET never gives because it refuses instead.
+// 6, and one EPANET never gives because it refuses instead. A run code
+// past LAST_WARNING is an Error.
 Warning :: enum i32 {
 	None              = 0,
 	Unbalanced        = 1, // the system did not balance in the trials allowed
@@ -234,3 +235,5 @@ Warning :: enum i32 {
 	Negative_Pressure = 6,
 	Nothing_To_Solve  = 7, // no node a tank or reservoir reaches: the step moved the clock only
 }
+
+LAST_WARNING :: int(Warning.Negative_Pressure)

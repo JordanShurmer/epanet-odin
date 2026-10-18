@@ -100,12 +100,11 @@ nextqual :: proc(p: ^Project) -> (tstep: i64, errcode: int) {
 	if tm.htime <= tm.dur do hydstep = tm.htime - tm.qtime
 	if q.kind != .NONE && hydstep > 0 {
 		qtime: i64 = 0
-		for !q.out_of_memory && qtime < hydstep {
+		for qtime < hydstep {
 			dt := min(tm.qstep, hydstep - qtime)
 			qtime += dt
 			transport(&p.net, &p.hyd, tm, q, dt)
 		}
-		if q.out_of_memory do errcode = 101
 	}
 	eval_mass_balance(&p.net, q)
 	if errcode == 0 do tstep = hydstep
@@ -138,7 +137,6 @@ stepqual :: proc(p: ^Project) -> (tleft: i64, errcode: int) {
 			tm.qtime += dt
 		}
 		tstep -= dt
-		if q.out_of_memory do errcode = 101
 		if errcode != 0 || tstep <= 0 do break
 	}
 	eval_mass_balance(&p.net, q)

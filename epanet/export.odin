@@ -293,7 +293,7 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 	if q := p.qual; q != nil {
 		v.q = {
 			kind = Qual_Type(q.kind), trace_node = int(q.trace_node),
-			reactive = q.reactive != 0, out_of_memory = q.out_of_memory != 0,
+			reactive = q.reactive != 0,
 			ctol = q.ctol, diffus = q.diffus, climit = q.climit,
 			bulk_order = q.bulk_order, wall_order = q.wall_order, tank_order = q.tank_order,
 			sc = q.sc, bucf = q.bucf, tucf = q.tucf,
@@ -403,7 +403,6 @@ unview :: proc "contextless" (p: ^Project_C, v: ^Views) {
 	if q := p.qual; q != nil {
 		b := v.q.balance
 		q.reactive = c.int(v.q.reactive)
-		q.out_of_memory = c.int(v.q.out_of_memory)
 		q.sc, q.bucf, q.tucf = v.q.sc, v.q.bucf, v.q.tucf
 		q.wbulk, q.wwall, q.wtank, q.wsource, q.source_qual = v.q.wbulk, v.q.wwall, v.q.wtank, v.q.wsource, v.q.source_qual
 		q.initial, q.inflow, q.outflow, q.reacted, q.final, q.ratio = b.initial, b.inflow, b.outflow, b.reacted, b.final, b.ratio
