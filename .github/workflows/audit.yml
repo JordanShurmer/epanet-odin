@@ -1,0 +1,63 @@
+# audit.yml — the live report: audit/audit.sh on every push to main, the page
+# published to GitHub Pages and kept as a run artifact.
+#
+#   https://jordanshurmer.github.io/epanet-odin/
+#
+# Pages has to be switched on once, under Settings → Pages → Source: GitHub
+# Actions; the configure-pages step tries to do that itself, and the artifact
+# is there either way.
+name: audit
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  ODIN_RELEASE: dev-2026-10   # the compiler, from github.com/odin-lang/Odin/releases
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Odin
+        run: |
+          mkdir -p "$HOME/odin"
+          curl -sSL "https://github.com/odin-lang/Odin/releases/download/$ODIN_RELEASE/odin-linux-amd64-$ODIN_RELEASE.tar.gz" \
+            | tar xz -C "$HOME/odin" --strip-components=1
+          echo "$HOME/odin" >> "$GITHUB_PATH"
+          "$HOME/odin/odin" version
+      - name: valgrind
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends valgrind
+      - run: audit/audit.sh
+      - run: mkdir -p site && cp build/audit/index.html site/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audit
+          path: site/index.html
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+        continue-on-error: true
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  publish:
+    needs: audit
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -56,10 +56,17 @@ harness/        the plug-in validation
   dumpnet.c       the twin of cmd/dumpnet over EPANET's own reader
   fixtures/       small networks that reach the branches the real ones do not
   out.sh          the ✓/✗ output vocabulary the script speaks
+audit/          the port measured against EPANET — see Audit below
+  audit.sh        harness, sources, builds, bench, valgrind, coverage → build/audit/index.html
+  bench.c         one network through the whole toolkit, timed phase by phase
+  loc.py          lines, functions, decisions and depth per file, both sides
+  render.py       the files read, the summary printed, the page written
+  odin-runtime.supp  what memcheck says about Odin's own allocator
 package.sh      builds lib/, include/ and bin/ and tars them up for a release
 .github/workflows/
   ci.yml          the harness, on every push and pull request
   release.yml     a v* tag: the harness, package.sh per platform, the release
+  audit.yml       audit.sh on main, the page published to GitHub Pages
 epanet-c/       OWA EPANET, cloned on demand (gitignored; not `EPANET/`, which
                 is `epanet/` on a case-insensitive disk)
 build/          scratch (gitignored)
@@ -245,6 +252,40 @@ Next, in order:
 bywater-mill carries this repository as the submodule `epanet/odin`; its
 `make epanet-odin` runs the harness here against its own EPANET checkout
 with its utilities' networks added to the fixtures.
+
+## Audit — the live report
+
+```sh
+audit/audit.sh            # everything, a few minutes → build/audit/index.html
+audit/audit.sh quick      # no valgrind, no coverage
+audit/audit.sh -v         # name every step
+```
+
+One script measures the port against EPANET and writes one page (and prints
+the same figures on the terminal). Three builds of the engine go through it:
+EPANET's C at `-O2`, the Odin toolkit at `-o:speed`, and the Odin toolkit
+with `-no-bounds-check` — the difference between the last two is what the
+checks cost.
+
+1. **Overview** — the harness tally; lines, functions, decisions and nesting
+   per part of EPANET beside the Odin files that port it; the EN_* functions
+   declared against those exported; build times at both optimisation levels;
+   library and binary sizes; how much of EPANET's C the fixtures run
+   (llvm-cov).
+2. **Examples** — Net1, Net2, Net3 and a 1,600-node grid through open,
+   hydraulics, quality, report and close on each build: results, report,
+   `.out` and `.hyd` byte for byte identical, then the median time per phase,
+   the peak resident set and its growth over the reps.
+3. **Analytics** — callgrind instruction counts with simulated caches and
+   branch prediction, each hot C function beside its Odin twin, the twenty
+   costliest functions inclusive of callees per build; massif peak heap;
+   memcheck errors and leaks with where they come from.
+
+The page is `build/audit/index.html`, one file, set in Iosevka (the local
+font if installed, else fetched), light and dark. `.github/workflows/audit.yml`
+runs it on every push to `main` and publishes it at
+<https://jordanshurmer.github.io/epanet-odin/>. Needs python3; valgrind and
+llvm-cov are optional and a run without them says so.
 
 ## Releases
 

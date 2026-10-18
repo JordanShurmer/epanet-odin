@@ -1,0 +1,17 @@
+# odin-runtime.supp — what memcheck says about Odin's own runtime, not the port.
+#
+#   valgrind --tool=memcheck --suppressions=audit/odin-runtime.supp …
+#
+# Odin's heap allocator keeps a size header memcheck does not know about, so
+# every resize reads what memcheck counts as uninitialised. The report names
+# the suppressed count; the engine's own errors stay visible.
+{
+   odin-runtime-heap-allocator-cond
+   Memcheck:Cond
+   fun:runtime::heap_allocator_proc*
+}
+{
+   odin-runtime-heap-allocator-value
+   Memcheck:Value8
+   fun:runtime::heap_allocator_proc*
+}
