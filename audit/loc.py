@@ -32,16 +32,16 @@ GROUPS = [
                      "epanet/validate.odin", "epanet/project.odin"]),
     ("report and files", ["report.c", "output.c"], ["epanet/report.odin", "epanet/output.odin"]),
     ("toolkit", ["epanet.c", "project.c"],
-                ["api/api.odin", "epanet/open.odin", "epanet/export.odin", "epanet/errors.odin"]),
+                ["api/api.odin", "api/edit.odin", "epanet/edit.odin", "epanet/open.odin", "epanet/export.odin", "epanet/errors.odin"]),
+    (".inp writer", ["inpfile.c"], ["epanet/inpfile.odin"]),
     ("declarations", ["types.h", "funcs.h", "text.h", "enumstxt.h", "hash.h", "mempool.h"], []),
-    ("not ported", ["epanet2.c", "inpfile.c", "hash.c", "mempool.c",
+    ("not ported", ["epanet2.c", "hash.c", "mempool.c",
                     "util/cstr_helper.c", "util/cstr_helper.h", "util/errormanager.c",
                     "util/errormanager.h", "util/filemanager.c", "util/filemanager.h"], []),
     ("harness only", [], ["epanet/dump.odin"]),
 ]
 NOTES = {
     "epanet2.c": "the legacy single-project API",
-    "inpfile.c": "the .inp writer (roadmap: the editing toolkit)",
     "hash.c": "a string hash; the port keeps a map",
     "mempool.c": "a pool; the port keeps an arena",
     "util/filemanager.c": "a file wrapper the port does not need",
@@ -51,7 +51,7 @@ NOTES = {
     "epanet/export.odin": "the C face the harness plugs in through",
     "epanet/dump.odin": "the project as text, for the parse comparison",
 }
-HARNESS = ["harness/bridge.c", "harness/run.c", "harness/dumpnet.c", "harness/test.sh",
+HARNESS = ["harness/bridge.c", "harness/run.c", "harness/rebuild.c", "harness/dumpnet.c", "harness/test.sh",
            "harness/out.sh", "cmd/dumpnet/main.odin",
            "audit/audit.sh", "audit/bench.c", "audit/loc.py", "audit/render.py"]
 
@@ -198,7 +198,8 @@ def main():
 
     header = open(os.path.join(EP, "include", "epanet2_2.h"), encoding="utf-8", errors="replace").read()
     declared = sorted(set(re.findall(r"DLLEXPORT\s+(EN_\w+)\s*\(", header)))
-    api = open(os.path.join(ROOT, "api", "api.odin"), encoding="utf-8").read()
+    api = "".join(open(os.path.join(ROOT, "api", f), encoding="utf-8").read()
+                  for f in sorted(os.listdir(os.path.join(ROOT, "api"))) if f.endswith(".odin"))
     exported = sorted(set(re.findall(r'link_name\s*=\s*"(EN_\w+)"', api)))
 
     json.dump({

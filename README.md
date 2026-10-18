@@ -45,7 +45,13 @@ epanet/         the Odin package `epanet` — the rewrite
   errors.odin     EPANET's error messages by code
   open.odin       opening and closing the solvers on an owned project; the
                   quality run's orchestration over the hydraulics file
+  edit.odin       the project edited after it is read: tables that grow, a
+                  node, link, demand, pattern, curve, control or rule added or
+                  taken out with every index moved
+  inpfile.odin    the project written back as an .inp file
 api/            the toolkit: EN_* over the Odin project, its own static library
+  api.odin        the running half: files, runs, the report, every getter
+  edit.odin       the editing half: EN_init, EN_set*, EN_add*, EN_delete*
 cmd/dumpnet/    reads an .inp with the Odin reader and prints the project
 harness/        the plug-in validation
   test.sh         builds the four binaries (plain EPANET, the plug-in build, its
@@ -53,6 +59,8 @@ harness/        the plug-in validation
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
   run.c           driver: every node and link value and quality, every step, %.17g,
                   and the report, output and hydraulics files when asked
+  rebuild.c       driver: a network read, built again through the editing API,
+                  run, written as .inp and read back — on each build
   dumpnet.c       the twin of cmd/dumpnet over EPANET's own reader
   fixtures/       small networks that reach the branches the real ones do not
   out.sh          the ✓/✗ output vocabulary the script speaks
@@ -228,13 +236,28 @@ Ported, bit-exact on every fixture:
     the way: Odin folds a product of two constants exactly, where C
     rounds each constant to a double first, a last-bit difference that
     grows through a Newton iteration; such products go through variables.
-    Not yet: the editing calls (`EN_set*`, `EN_add*`, `EN_delete*`,
-    `EN_saveinpfile`), demand names, link vertices, comments and tags,
-    and the input error messages.
+    Still C's: the input error messages.
+
+11. **The editing toolkit** — the other half of `epanet.c` (`api/edit.odin`
+    over `epanet/edit.odin`) and `inpfile.c` (`inpfile.odin`): `EN_init`,
+    every `EN_set*`, `EN_add*` and `EN_delete*`, `EN_saveinpfile`, and
+    with them demand names, link vertices, comments and tags, which the
+    reader now keeps. The project's tables grow (doubling, from the
+    arena); a node or link added or taken out moves every index that
+    pointed past it — the tanks, the links' ends, the controls, the rules'
+    premises and actions, the demand ranges — as EPANET's do, and a rule
+    added by text goes through the reader's own rule parser. All 144
+    `EN_*` functions of `epanet2_2.h` are exported. Proved by
+    `harness/rebuild.c`: each fixture read, built again in a fresh project
+    through the getters and setters, run and printed, written as `.inp`,
+    read back and run, on plain EPANET and on the toolkit — the prints and
+    the files are byte for byte the same (one EPANET quirk shared: its own
+    writer prints a FILLTIME premise in h:m:s, which its own parser does
+    not read back; `parse-clean` shows it on both sides).
 
 Next, in order:
 
-11. **The Odin API** — designed in [`API.md`](API.md), for games and
+12. **The Odin API** — designed in [`API.md`](API.md), for games and
     every other data-oriented use: a `Sim` whose network is columns the
     caller edits at any time and steps through time, its results columns
     beside them, N chemicals over one hydraulics, what no source reaches
@@ -243,9 +266,6 @@ Next, in order:
     for files, `simulate` to `Results` as tables. No Project: the
     engine's struct becomes `Sim`, and the files, report state and
     `EN_*` semantics move to `api/`, which stays beside it for C programs.
-12. **The editing toolkit** — `EN_set*`, `EN_add*`, `EN_delete*`,
-    `EN_saveinpfile` (`inpfile.c`): a project built and changed through
-    the C API, not only read from a file.
 
 ## Living inside bywater-mill
 

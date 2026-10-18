@@ -21,7 +21,10 @@
 # both and comparing; `pure` links the Odin toolkit library (api/) and no
 # EPANET object at all. Then for every fixture: c, odin and pure must print
 # the same results (bit-exact, else within TOL relative and noted) and write
-# the same files, and shadow must report no per-call mismatches.
+# the same files, and shadow must report no per-call mismatches. A second
+# driver (harness/rebuild.c), linked to c and to pure, reads each fixture,
+# builds it again through the editing API, runs that, writes both as .inp
+# and reads the second back: the prints and the files must match too.
 #
 # ponytail: a shell loop over clang and objcopy; cmake stays out of it.
 set -uo pipefail
@@ -98,6 +101,7 @@ for f in $EP/src/*.c $EP/src/util/*.c; do
 done
 run $CC $CFLAGS -c harness/run.c -o "$B/run.o" || bad "compile run.c"
 run $CC $CFLAGS -c harness/dumpnet.c -o "$B/dumpnet.o" || bad "compile dumpnet.c"
+run $CC $CFLAGS -c harness/rebuild.c -o "$B/rebuild.o" || bad "compile rebuild.c"
 
 cp "$B"/c/*.o "$B/odin/"
 # Each object that defines a swapped symbol goes into the odin build twice.
@@ -137,10 +141,12 @@ note "odin build api"
 run "$ODIN" build api -build-mode:static -out:"$B/libepanet-api.a" \
     -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build api"
 run $CC $CFLAGS "$B/run.o" "$B/libepanet-api.a" -lm -o "$B/run-pure" || bad "link run-pure"
+run $CC $CFLAGS "$B/rebuild.o" "$B"/c/*.o -lm -o "$B/rebuild-c" || bad "link rebuild-c"
+run $CC $CFLAGS "$B/rebuild.o" "$B/libepanet-api.a" -lm -o "$B/rebuild-pure" || bad "link rebuild-pure"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
 [ "$_fail" -eq 0 ] || { tally "epanet-odin"; exit 1; }
-ok "build c odin shadow pure dumpnet"
+ok "build c odin shadow pure dumpnet rebuild"
 
 # ── compare ─────────────────────────────────────────────────────────────
 # same A B — exit 0 when every number on every line is within TOL (relative)
@@ -259,10 +265,44 @@ check_parse() {
     fi
 }
 
+# check_rebuild FIXTURE — the editing API: read the network, build it again
+# through EN_init and the setters on each side, run and print, write both
+# projects as .inp, read the rebuilt one back and run that too.
+check_rebuild() {
+    inp=$1
+    fx=$(basename "$inp" .inp)
+    "$B/rebuild-c" "$inp" "$B/$fx.rb.c" >"$B/$fx.rb.c.txt" 2>"$B/$fx.rb.c.err"
+    rc_c=$?
+    "$B/rebuild-pure" "$inp" "$B/$fx.rb.pure" >"$B/$fx.rb.pure.txt" 2>"$B/$fx.rb.pure.err"
+    rc_p=$?
+    if [ $rc_c -ne $rc_p ]; then
+        bad "$fx rebuild" "exit c=$rc_c pure=$rc_p" "$(head -1 "$B/$fx.rb.pure.err")"
+        return
+    fi
+    if cmp -s "$B/$fx.rb.c.txt" "$B/$fx.rb.pure.txt"; then
+        if [ $rc_c -eq 0 ]; then
+            ok "$fx rebuild results bit-exact ($(wc -l <"$B/$fx.rb.c.txt") lines)"
+        else
+            skip "$fx rebuild ($(grep -m1 'EPANET error' "$B/$fx.rb.c.err" | sed 's/.*rebuild: //'))"
+        fi
+    else
+        bad "$fx rebuild results" "$(diff "$B/$fx.rb.c.txt" "$B/$fx.rb.pure.txt" | head -3)" "diff $B/$fx.rb.c.txt $B/$fx.rb.pure.txt"
+    fi
+    for what in orig rebuilt; do
+        [ -f "$B/$fx.rb.c.$what.inp" ] || continue
+        if cmp -s "$B/$fx.rb.c.$what.inp" "$B/$fx.rb.pure.$what.inp"; then
+            ok "$fx $what .inp identical ($(wc -l <"$B/$fx.rb.c.$what.inp") lines)"
+        else
+            bad "$fx $what .inp" "$(diff "$B/$fx.rb.c.$what.inp" "$B/$fx.rb.pure.$what.inp" | head -3)" "diff $B/$fx.rb.c.$what.inp $B/$fx.rb.pure.$what.inp"
+        fi
+    done
+}
+
 for inp in $FIXTURES; do
     check_parse "$inp"
     check "$inp" ""
     check "$inp" stepq
+    check_rebuild "$inp"
 done
 
 

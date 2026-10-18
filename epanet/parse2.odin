@@ -24,11 +24,12 @@ demanddata :: proc(ps: ^Parser) -> int {
 	}
 	// The first category here replaces the one [JUNCTIONS] made; the
 	// node's demand slot is the marker.
+	name := kept(ps.comment, MAXID)
 	if len(ps.demands[j]) > 0 && p.hyd.node_demand[j] != MISSING {
-		ps.demands[j][0] = {y, i32(pat)}
+		ps.demands[j][0] = {y, i32(pat), len(name) > 0 ? name : ps.demands[j][0].name}
 		p.hyd.node_demand[j] = MISSING
 	} else {
-		append(&ps.demands[j], Demand{y, i32(pat)})
+		append(&ps.demands[j], Demand{y, i32(pat), name})
 	}
 	return 0
 }

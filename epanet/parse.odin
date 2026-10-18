@@ -16,6 +16,7 @@ import "core:strings"
 MAXID :: 31
 MAXFNAME :: 259
 MAXLINE :: 1024
+MAXMSG :: 255
 MAXTOKS :: 40
 TITLELEN :: 79
 
@@ -43,6 +44,7 @@ SECTION_NAMES := [?]string {
 Demand :: struct {
 	base: f64,
 	pat:  i32,
+	name: string,
 }
 
 // Parser is the reader's state between lines.
@@ -61,6 +63,7 @@ Parser :: struct {
 	pattern_f:             [dynamic][dynamic]f64,
 	curve_x, curve_y:      [dynamic][dynamic]f64,
 	demands:               [][dynamic]Demand,
+	vx, vy:                [][dynamic]f64, // vertices per link
 	// rules in progress
 	rule_label:            [dynamic]string,
 	rule_state:            Rule_Logic,
@@ -483,7 +486,16 @@ add_pattern :: proc(ps: ^Parser, id: string) -> int {
 	ids[len(ids) - 1] = strings.clone(id)
 	ps.p.pattern_id = ids
 	ps.p.patterns_by_id[ids[len(ids) - 1]] = i32(len(ids) - 1)
+	ps.p.pattern_comment = grown(ps.p.pattern_comment, len(ids))
 	return 0
+}
+
+// grown: s with room for n entries, the ones it had kept.
+grown :: proc(s: []$E, n: int) -> []E {
+	if len(s) >= n do return s
+	t := make([]E, n)
+	copy(t, s)
+	return t
 }
 
 add_curve :: proc(ps: ^Parser, id: string) -> int {
@@ -510,6 +522,7 @@ add_curve :: proc(ps: ^Parser, id: string) -> int {
 	types[len(types) - 1] = .GENERIC_CURVE
 	ps.p.curve_type = types
 	ps.p.curves_by_id[ids[len(ids) - 1]] = i32(len(ids) - 1)
+	ps.p.curve_comment = grown(ps.p.curve_comment, len(ids))
 	return 0
 }
 
@@ -566,6 +579,8 @@ readdata :: proc(ps: ^Parser) -> int {
 	p := ps.p
 	nn := p.max_juncs + p.max_tanks
 	ps.demands = make([][dynamic]Demand, nn + 1)
+	ps.vx = make([][dynamic]f64, p.max_links + 1)
+	ps.vy = make([][dynamic]f64, p.max_links + 1)
 	ps.prev_pat = -1
 	ps.prev_curve = 0
 	for i in 0 ..= nn do p.node_x[i], p.node_y[i] = MISSING, MISSING
@@ -684,11 +699,11 @@ newline :: proc(ps: ^Parser, sect: Section, line: string) -> int {
 	case .OPTIONS:
 		return optiondata(ps)
 	case .TAGS:
-		return ps.ntok < 3 ? 201 : 0
+		return tagdata(ps)
 	case .COORDS:
 		return coordata(ps)
 	case .VERTICES:
-		return 0
+		return vertexdata(ps)
 	case .LABELS, .BACKDROP, .END:
 		return 0
 	}
@@ -721,6 +736,7 @@ juncdata :: proc(ps: ^Parser) -> int {
 	if errcode > 0 do return set_error(ps, 0, errcode)
 	net.njuncs += 1
 	net.nnodes += 1
+	p.node_comment[net.njuncs] = kept(ps.comment, MAXMSG)
 	el, d := 0.0, 0.0
 	pat := 0
 	errtok := -1
@@ -749,7 +765,7 @@ juncdata :: proc(ps: ^Parser) -> int {
 	net.has_source[j] = false
 	net.ke[j] = 0
 	net.node_type[j] = .JUNCTION
-	append(&ps.demands[j], Demand{d, i32(pat)})
+	append(&ps.demands[j], Demand{d, i32(pat), ""})
 	p.hyd.node_demand[j] = d
 	if errcode > 0 do return set_error(ps, errtok, errcode)
 	return 0
@@ -779,6 +795,7 @@ tankdata :: proc(ps: ^Parser) -> int {
 	if errcode != 0 do return set_error(ps, 0, errcode)
 	net.ntanks += 1
 	net.nnodes += 1
+	p.node_comment[i] = kept(ps.comment, MAXMSG)
 
 	el, initlevel, minlevel, maxlevel, minvol, diam := 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 	pattern, curve := 0, 0
@@ -868,6 +885,7 @@ pipedata :: proc(ps: ^Parser) -> int {
 	if errcode := addlink_id(ps, net.nlinks + 1, ps.tok[0]); errcode != 0 do return set_error(ps, 0, errcode)
 	net.nlinks += 1
 	k := net.nlinks
+	p.link_comment[k] = kept(ps.comment, MAXMSG)
 	net.n1[k], net.n2[k] = i32(j1), i32(j2)
 	if p.units == .SI {
 		net.len[k], net.diam[k] = 100, 254
@@ -950,6 +968,7 @@ pumpdata :: proc(ps: ^Parser) -> int {
 	net.nlinks += 1
 	net.npumps += 1
 	k, m := net.nlinks, net.npumps
+	p.link_comment[k] = kept(ps.comment, MAXMSG)
 	net.n1[k], net.n2[k] = i32(j1), i32(j2)
 	net.diam[k] = 0
 	net.len[k] = 0
@@ -1065,6 +1084,7 @@ valvedata :: proc(ps: ^Parser) -> int {
 	net.nvalves += 1
 	net.nlinks += 1
 	k, v := net.nlinks, net.nvalves
+	p.link_comment[k] = kept(ps.comment, MAXMSG)
 	net.n1[k], net.n2[k] = i32(j1), i32(j2)
 	net.diam[k] = p.units == .SI ? 254 : 10
 	net.len[k] = 0
@@ -1123,6 +1143,7 @@ patterndata :: proc(ps: ^Parser) -> int {
 		i = findpattern(p, ps.tok[0])
 		if i <= 0 do return set_error(ps, 0, 205)
 	}
+	if len(p.pattern_comment[i]) == 0 && len(ps.comment) > 0 do p.pattern_comment[i] = kept(ps.comment, MAXMSG)
 	f := &ps.pattern_f[i]
 	n1 := len(f)
 	for _ in 1 ..= n do append(f, 1.0)
@@ -1153,6 +1174,7 @@ curvedata :: proc(ps: ^Parser) -> int {
 		i = findcurve(p, ps.tok[0])
 		if i == 0 do return set_error(ps, 0, 206)
 	}
+	if len(p.curve_comment[i]) == 0 && len(ps.comment) > 0 do p.curve_comment[i] = kept(ps.comment, MAXMSG)
 	append(&ps.curve_x[i], x)
 	append(&ps.curve_y[i], y)
 	if ctype >= 0 do p.curve_type[i] = Curve_Type(ctype)
@@ -1170,4 +1192,40 @@ coordata :: proc(ps: ^Parser) -> int {
 	if !oky do return 0
 	ps.p.node_x[j], ps.p.node_y[j] = x, y
 	return 0
+}
+
+// vertexdata: [VERTICES] link x y, appended to the link's bends.
+vertexdata :: proc(ps: ^Parser) -> int {
+	if ps.ntok < 3 do return 0
+	j := findlink(ps.p, ps.tok[0])
+	if j == 0 do return 0
+	x, okx := getfloat(ps.tok[1])
+	if !okx do return 0
+	y, oky := getfloat(ps.tok[2])
+	if !oky do return 0
+	append(&ps.vx[j], x)
+	append(&ps.vy[j], y)
+	return 0
+}
+
+// tagdata: [TAGS] NODE|LINK id tag.
+tagdata :: proc(ps: ^Parser) -> int {
+	p := ps.p
+	if ps.ntok < 3 do return 201
+	if match(ps.tok[0], "NODE") {
+		j := findnode(p, ps.tok[1])
+		if j == 0 do return set_error(ps, 0, 203)
+		p.node_tag[j] = kept(ps.tok[2], MAXMSG)
+	} else if match(ps.tok[0], "LINK") {
+		j := findlink(p, ps.tok[1])
+		if j == 0 do return set_error(ps, 0, 203)
+		p.link_tag[j] = kept(ps.tok[2], MAXMSG)
+	}
+	return 0
+}
+
+// kept: a copy of s, at most n bytes, from the current allocator.
+kept :: proc(s: string, n: int) -> string {
+	if len(s) == 0 do return ""
+	return strings.clone(clip(s, n))
 }

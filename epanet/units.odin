@@ -44,6 +44,8 @@ reindex_tanks :: proc(ps: ^Parser) {
 		p.node_id[n2] = p.node_id[n1]
 		p.node_x[n2], p.node_y[n2] = p.node_x[n1], p.node_y[n1]
 		p.node_rpt[n2] = p.node_rpt[n1]
+		p.node_comment[n2] = p.node_comment[n1]
+		p.node_tag[n2] = p.node_tag[n1]
 		net.el[n2] = net.el[n1]
 		net.ke[n2] = net.ke[n1]
 		net.node_type[n2] = net.node_type[n1]
@@ -84,16 +86,24 @@ finish_tables :: proc(ps: ^Parser) {
 	for d in ps.demands do nd += len(d)
 	net.demand_base = make([]f64, nd + 1)
 	net.demand_pat = make([]i32, nd + 1)
+	p.demand_name = make([]string, nd + 1)
 	k := 1
 	for i in 1 ..= net.nnodes {
 		net.demand_first[i] = i32(k)
 		for d in ps.demands[i] {
 			net.demand_base[k] = d.base
 			net.demand_pat[k] = d.pat
+			p.demand_name[k] = d.name
 			k += 1
 		}
 	}
 	net.demand_first[net.nnodes + 1] = i32(k)
+	for j in 1 ..= net.nlinks {
+		if len(ps.vx[j]) > 0 {
+			p.vertex_x[j] = ps.vx[j][:]
+			p.vertex_y[j] = ps.vy[j][:]
+		}
+	}
 
 	append(&ps.rule_premise_first, i32(len(ps.premise_logop)))
 	append(&ps.rule_then_first, i32(len(ps.action_link)))
@@ -309,14 +319,22 @@ init_units :: proc(p: ^Project) {
 		f[.TIME].units = "hrs"
 	}
 
+	sync_ucf(p)
+}
+
+// sync_ucf gives the network the factors it reads for itself (EPANET has
+// one Ucf table; the engine here keeps copies, so a change to p.ucf comes
+// through this).
+sync_ucf :: proc "contextless" (p: ^Project) {
 	net := &p.net
-	net.ucf_flow = qcf
-	net.ucf_head = hcf
+	u := &p.ucf
+	net.ucf_flow = u[.FLOW]
+	net.ucf_head = u[.HEAD]
 	net.ucf_volume = u[.VOLUME]
-	net.ucf_quality = ccf
-	net.ucf_elev = hcf
-	net.ucf_demand = qcf
-	net.ucf_pressure = pcf
+	net.ucf_quality = u[.QUALITY]
+	net.ucf_elev = u[.ELEV]
+	net.ucf_demand = u[.DEMAND]
+	net.ucf_pressure = u[.PRESSURE]
 }
 
 // convert_units puts the input in internal units.

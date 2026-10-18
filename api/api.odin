@@ -3,10 +3,10 @@ package api
 // api.odin — EPANET's toolkit (epanet.c) over the Odin project: the
 // EN_* functions with EPANET's names, C calling convention, argument
 // shapes and error codes, so a C program written against epanet2_2.h
-// links this library instead of libepanet2. This is the running half of
-// the toolkit — projects, files, the hydraulic and quality runs, the
-// report, and every getter; the editing calls (EN_set*, EN_add*,
-// EN_delete*) are the next phase.
+// links this library instead of libepanet2. This file is the running half
+// of the toolkit — projects, files, the hydraulic and quality runs, the
+// report, and every getter; edit.odin is the editing half (EN_init,
+// EN_set*, EN_add*, EN_delete*).
 //
 // Built as its own static library (`odin build api -build-mode:static`),
 // the engine package inside it.
@@ -25,6 +25,7 @@ Field :: ep.Field
 
 MAXID :: ep.MAXID
 MAXMSG :: 255
+MAXLINE :: ep.MAXLINE
 TITLELEN :: ep.TITLELEN
 
 // the toolkit's codes (epanet2_enums.h)
@@ -997,14 +998,17 @@ EN_getnumdemands :: proc "c" (p: ^Project, node: c.int, n: ^c.int) -> c.int {
 
 @(export, link_name = "EN_getdemandindex")
 EN_getdemandindex :: proc "c" (p: ^Project, node: c.int, name: cstring, index: ^c.int) -> c.int {
-	// demand names are not kept: only the empty name is found, on the first category
 	index^ = 0
 	if !p.openflag do return 102
 	if node <= 0 || int(node) > p.net.nnodes do return 203
 	if name == nil do return 253
-	if len(name) == 0 && demand_slot(p, int(node), 1) >= 0 {
-		index^ = 1
-		return 0
+	s := string(name)
+	net := &p.net
+	for k in net.demand_first[node] ..< net.demand_first[node + 1] {
+		if p.demand_name[k] == s {
+			index^ = c.int(k - net.demand_first[node] + 1)
+			return 0
+		}
 	}
 	return 253
 }
@@ -1025,7 +1029,9 @@ EN_getdemandname :: proc "c" (p: ^Project, node, demand: c.int, name: [^]u8) -> 
 	name[0] = 0
 	if !p.openflag do return 102
 	if node <= 0 || int(node) > p.net.njuncs do return 203
-	if demand_slot(p, int(node), int(demand)) < 0 do return 253
+	k := demand_slot(p, int(node), int(demand))
+	if k < 0 do return 253
+	put_str(name, p.demand_name[k], MAXID)
 	return 0
 }
 
@@ -1201,9 +1207,10 @@ EN_getlinkvalues :: proc "c" (p: ^Project, property: c.int, values: [^]f64) -> c
 
 @(export, link_name = "EN_getvertexcount")
 EN_getvertexcount :: proc "c" (p: ^Project, index: c.int, count: ^c.int) -> c.int {
-	count^ = 0 // vertices are not kept
+	count^ = 0
 	if !p.openflag do return 102
 	if index <= 0 || int(index) > p.net.nlinks do return 204
+	count^ = c.int(len(p.vertex_x[index]))
 	return 0
 }
 

@@ -96,6 +96,12 @@ Project :: struct {
 	rule_label:                   []string,
 	node_x, node_y:               []f64, // MISSING when not given
 	node_rpt, link_rpt:           []b32,
+	node_comment, link_comment:   []string, // the ;comment on the object's line
+	node_tag, link_tag:           []string, // [TAGS]
+	pattern_comment:              []string,
+	curve_comment:                []string,
+	demand_name:                  []string, // per demand slot, beside net.demand_base
+	vertex_x, vertex_y:           [][]f64, // a link's bends, nil when none
 	curve_type:                   []Curve_Type,
 	pump_qmax:                    []f64,
 	units:                        Units_System,
@@ -138,6 +144,12 @@ project_alloc :: proc(p: ^Project) {
 	p.node_y = make([]f64, nn + 1)
 	p.node_rpt = make([]b32, nn + 1)
 	p.link_rpt = make([]b32, nl + 1)
+	p.node_comment = make([]string, nn + 1)
+	p.link_comment = make([]string, nl + 1)
+	p.node_tag = make([]string, nn + 1)
+	p.link_tag = make([]string, nl + 1)
+	p.vertex_x = make([][]f64, nl + 1)
+	p.vertex_y = make([][]f64, nl + 1)
 	p.pump_qmax = make([]f64, np + 1)
 
 	net.el = make([]f64, nn + 1)
