@@ -377,10 +377,7 @@ Ported, equivalent on every fixture (bit-exact up to the tag `Identical`):
     network through it in Node and matches `check --reference` within
     `WASM_TOL`: the one import the module has is `pow`, the host's.
 
-Next:
-
-14. **`pow` in Odin** — the same bits on every host, for a lockstep
-    game; then the wasm build is held to the byte.
+That is the roadmap: core out, every phase done.
 
 ## Living inside bywater-mill
 

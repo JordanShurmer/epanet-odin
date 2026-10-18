@@ -444,10 +444,8 @@ What the wasm build is not: byte-identical to the native one. The engine
 takes `pow` from the host (`env.pow`, `Math.pow` in `epanet.js`), whose
 last bits are not glibc's, so `wasm/check.mjs` is held to `WASM_TOL`
 (1e-6) against `check --reference`, not to the byte; and for the same
-reason two hosts may differ in the last bits. A lockstep game that needs
-the same numbers on every machine wants `pow` written in Odin — the next
-rung, when a use needs it. The engine's own files and report never
-reach the wasm build: `files.odin`, `report.odin`, `output.odin`,
+reason two hosts may differ in the last bits. The engine's own files and
+report never reach the wasm build: `files.odin`, `report.odin`, `output.odin`,
 `inpfile.odin`, `dump.odin` and `export.odin` are native-only, and what
 the step would have said to a report goes to stubs (`report_wasm.odin`).
 
@@ -614,5 +612,4 @@ and, for what EPANET cannot do, two roads to one answer.
    lays `cmd/check`'s network through it in Node and matches `check
    --reference` within `WASM_TOL`. Waterworks' own `solver.js` and
    `net.js#inp` are the game's to replace, with its `check.mjs` as the
-   test, in its own repository. Next rung: `pow` in Odin, for the same
-   bits on every host.
+   test, in its own repository.
