@@ -181,7 +181,7 @@ def ratio(a, b):
 def loc_totals(loc):
     tot = {}
     for r in loc["files"]:
-        if r["group"] in ("harness only", "the Odin API"):
+        if r["group"] in ("harness only", "the Odin API", "the wasm build"):
             continue
         t = tot.setdefault(r["side"], {"files": 0, "lines": 0, "code": 0, "comment": 0, "functions": 0,
                                        "decisions": 0, "max_depth": 0, "longest": 0})

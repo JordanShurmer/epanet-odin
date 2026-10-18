@@ -1,3 +1,4 @@
+#+build !wasm32
 package epanet
 
 // dump.odin — a project written out as text, every field the engine

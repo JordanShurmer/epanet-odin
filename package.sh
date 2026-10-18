@@ -15,6 +15,7 @@
 #                          licence is beside them)
 #   bin/dumpnet            reads an .inp and prints the project
 #   bin/run                runs an .inp through the Odin API and prints every result
+#   wasm/epanet.wasm       the engine for JavaScript, with wasm/epanet.js to load it
 #   LICENSE, README.md
 # Not in it: the Odin package epanet/ — an Odin program takes the source.
 #
@@ -69,6 +70,13 @@ if run "$ODIN" build cmd/run -out:"$P/bin/run" -o:speed -vet -strict-style; then
     ok "bin/run"
 else
     bad "odin build run"
+fi
+mkdir -p "$P/wasm"
+if run "$ODIN" build wasm -target:freestanding_wasm32 -out:"$P/wasm/epanet.wasm" -no-entry-point -o:speed -vet -strict-style &&
+        cp wasm/epanet.js "$P/wasm/"; then
+    ok "wasm/epanet.wasm epanet.js"
+else
+    bad "odin build wasm"
 fi
 if cp "$EP/include/epanet2_2.h" "$EP/include/epanet2_enums.h" "$P/include/" &&
         cp "$EP/LICENSE" "$P/include/LICENSE-EPANET" && cp LICENSE README.md "$P/"; then

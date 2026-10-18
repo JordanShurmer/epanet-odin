@@ -1,3 +1,4 @@
+#+build !wasm32
 package epanet
 
 // export.odin — the C face of the package. Each exported proc is one EPANET

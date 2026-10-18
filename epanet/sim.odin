@@ -15,8 +15,7 @@ package epanet
 // reservoir reaches is left out of the project rather than refused.
 
 import "base:runtime"
-import "core:c/libc"
-import "core:mem/virtual"
+import "core:strconv"
 import "core:strings"
 
 Node_Kind :: enum u8 {
@@ -617,10 +616,10 @@ rebuild :: proc(sim: ^Sim) -> Error {
 
 	// reach: a breadth-first walk from every tank and reservoir over
 	// every link, whatever its status
-	scratch: virtual.Arena
-	if virtual.arena_init_growing(&scratch) != nil do return .Out_Of_Memory
-	defer virtual.arena_destroy(&scratch)
-	context.allocator = virtual.arena_allocator(&scratch)
+	scratch: Arena
+	if !arena_init(&scratch) do return .Out_Of_Memory
+	defer arena_destroy(&scratch)
+	context.allocator = arena_allocator(&scratch)
 	reached := make([]bool, nn)
 	degree := make([]int, nn + 1)
 	for k in 0 ..< nl {
@@ -822,7 +821,7 @@ rebuild :: proc(sim: ^Sim) -> Error {
 	}
 	p := b.p
 	sim.engine = p
-	context.allocator = virtual.arena_allocator(&p.arena)
+	context.allocator = arena_allocator(&p.arena)
 	for j in 0 ..< nent_nodes do sim.node_engine[ent_row[j]] = b.node_index[j]
 	for j in nent_nodes ..< len(ent_row) do sim.link_engine[ent_row[j]] = b.link_index[j]
 
@@ -939,8 +938,7 @@ link_rows_ok :: proc "contextless" (sim: ^Sim, k: int) -> bool {
 
 row_id :: proc(prefix: string, i: int) -> string {
 	buf: [24]u8
-	n := libc.snprintf(raw_data(buf[:]), len(buf), "%s%d", strings.clone_to_cstring(prefix, context.temp_allocator), libc.int(i))
-	return strings.clone(string(buf[:n]))
+	return strings.concatenate({prefix, strconv.write_int(buf[:], i64(i), 10)})
 }
 
 // apply_sim_options puts the Sim's options over a Model's (or, for a bare
@@ -992,7 +990,7 @@ copy_in :: proc "contextless" (sim: ^Sim) {
 	u := &p.ucf
 	n := &sim.nodes
 	ecf := p.units == .US ? PSI_PER_FT * hyd.spgrav : M_PER_FT
-	kcf := libc.pow(u[.FLOW], hyd.qexp) / ecf
+	kcf := c_pow(u[.FLOW], hyd.qexp) / ecf
 	for row in 0 ..< n.count {
 		i := int(sim.node_engine[row])
 		if i == 0 do continue
@@ -1001,7 +999,7 @@ copy_in :: proc "contextless" (sim: ^Sim) {
 			net.el[i] = n.elevation[row] / u[.ELEV]
 			net.demand_base[net.demand_first[i]] = n.demand[row] / u[.DEMAND]
 			if n.emitter[row] > 0 {
-				net.ke[i] = kcf / libc.pow(n.emitter[row], hyd.qexp)
+				net.ke[i] = kcf / c_pow(n.emitter[row], hyd.qexp)
 				if hyd.emitter_flow[i] == 0 do hyd.emitter_flow[i] = 1
 			} else {
 				net.ke[i] = 0
@@ -1185,7 +1183,7 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 		return step, .Nothing_To_Solve, nil
 	}
 	p := sim.engine
-	context.allocator = virtual.arena_allocator(&p.arena)
+	context.allocator = arena_allocator(&p.arena)
 	net, hyd, t := &p.net, &p.hyd, &p.times
 	copy_in(sim)
 	_, errcode := run_hyd(net, hyd, &p.m, t, p)
@@ -1239,7 +1237,7 @@ sim_solve :: proc(sim: ^Sim) -> (warn: Warning, err: Error) {
 		return .Nothing_To_Solve, nil
 	}
 	p := sim.engine
-	context.allocator = virtual.arena_allocator(&p.arena)
+	context.allocator = arena_allocator(&p.arena)
 	copy_in(sim)
 	_, errcode := run_hyd(&p.net, &p.hyd, &p.m, &p.times, p)
 	if errcode > 6 {

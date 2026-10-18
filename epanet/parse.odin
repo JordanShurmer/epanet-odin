@@ -7,10 +7,6 @@ package epanet
 // units.odin. Keywords match as EPANET's do: the keyword is a prefix of
 // the token, case blind. Numbers go through strtod, as EPANET's do.
 
-import "core:c"
-import "core:c/libc"
-import "core:mem/virtual"
-import "core:os"
 import "core:strings"
 
 MAXID :: 31
@@ -116,26 +112,6 @@ match :: proc "contextless" (str, sub: string) -> bool {
 findmatch :: proc "contextless" (str: string, words: []string) -> int {
 	for w, i in words do if match(str, w) do return i
 	return -1
-}
-
-// getfloat: the number in s, by strtod; false when anything follows it.
-getfloat :: proc(s: string) -> (f64, bool) {
-	buf: [256]u8
-	n := min(len(s), 255)
-	copy(buf[:n], s)
-	buf[n] = 0
-	end: [^]u8
-	y := libc.strtod(cstring(&buf[0]), (^[^]c.char)(&end))
-	if end[0] > 0 do return y, false
-	return y, true
-}
-
-atol :: proc(s: string) -> i64 {
-	buf: [256]u8
-	n := min(len(s), 255)
-	copy(buf[:n], s)
-	buf[n] = 0
-	return i64(libc.atol(cstring(&buf[0])))
 }
 
 // hour converts a time ("5", "13:50", "1:50 pm", "30 min") to hours, or
@@ -259,37 +235,14 @@ set_error :: #force_inline proc(ps: ^Parser, tok, err: int) -> int {
 
 // ── the reader ────────────────────────────────────────────────────────
 
-// parse_inp reads the file into a new project. Returns the project and
-// EPANET's error code: 0, 200 when lines had errors, or a fatal code.
-parse_inp :: proc(path: string) -> (p: ^Project, errcode: int) {
-	p = project_new()
-	if p == nil do return nil, 101
-	errcode = read_inp(p, path)
-	if errcode == 302 {
-		project_free(p)
-		return nil, errcode
-	}
-	return
-}
-
 // project_new makes an empty project with its arena.
 project_new :: proc() -> ^Project {
 	p := new(Project)
-	if virtual.arena_init_growing(&p.arena) != nil {
+	if !arena_init(&p.arena) {
 		free(p)
 		return nil
 	}
 	return p
-}
-
-// read_inp reads the file into an existing project, from its arena.
-read_inp :: proc(p: ^Project, path: string) -> (errcode: int) {
-	context.allocator = virtual.arena_allocator(&p.arena)
-	data, rerr := os.read_entire_file_from_path(path, context.allocator)
-	if rerr != nil do return 302
-	errcode = read_text(p, string(data))
-	if errcode == 0 || errcode == 200 do finish_project(p)
-	return
 }
 
 // read_text reads the file's text into the project as written: every

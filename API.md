@@ -411,14 +411,45 @@ output file holds, less the reaction rate and friction factor.
 
 ## WebAssembly
 
-Odin builds the package for `wasm32`. The game's side is small: a handful
-of exported procs that take a `^Sim` and plain numbers, and one that
-hands back the addresses of the columns, so JavaScript makes a
-`Float64Array` view over each column in the wasm memory, writes a demand,
-calls `step`, reads a pressure. No text, no file system, no name, no
-`malloc` for an out-parameter, no copy: the columns the game draws from
-are the engine's. The solve runs where the game puts it, a worker or the
-main thread; a step on a game's network is well under a frame.
+Odin builds the package for `wasm32` (`odin build wasm
+-target:freestanding_wasm32 -no-entry-point`, 280 KB). The game's side is
+small: `wasm/epanet.odin` exports a handful of procs that take a `^Sim`
+and plain numbers, and one that hands back the addresses of the columns,
+so JavaScript makes a `Float64Array` view over each column in the wasm
+memory, writes a demand, calls `step`, reads a pressure. No text, no file
+system, no name, no `malloc` for an out-parameter, no copy: the columns
+the game draws from are the engine's. `wasm/epanet.js` wraps it:
+
+```js
+import { instantiate, Node, Link, Units, Headloss } from "./epanet.js";
+const engine = await instantiate(await fetch("epanet.wasm").then(r => r.arrayBuffer()));
+const sim = engine.sim(256, 256, { flowUnits: Units.LPS, headloss: Headloss.HW });
+const spring = sim.nodeAdd(Node.RESERVOIR); sim.v.head[spring] = 204;
+const house  = sim.nodeAdd(Node.JUNCTION);  sim.v.elevation[house] = 140; sim.v.demand[house] = 0.3;
+const main   = sim.linkAdd(Link.PIPE, spring, house);
+sim.v.length[main] = 312; sim.v.linkDiameter[main] = 100; sim.v.roughness[main] = 140;
+sim.step();                 // each game quarter hour
+sim.v.pressure[house];      // m
+```
+
+`sim.v` is the set of typed-array views over the engine's columns,
+rebuilt after every call that can move memory. Chemicals:
+`sim.setChemicals(n)`, `sim.chemical(i, {kind, decay, wall})`,
+`sim.source(i, node, kind, strength)`, `sim.v.qualityInit0[node]`, then
+`sim.v.quality0[node]` after a step. The solve runs where the game puts
+it, a worker or the main thread; a step on a game's network is well under
+a frame.
+
+What the wasm build is not: byte-identical to the native one. The engine
+takes `pow` from the host (`env.pow`, `Math.pow` in `epanet.js`), whose
+last bits are not glibc's, so `wasm/check.mjs` is held to `WASM_TOL`
+(1e-6) against `check --reference`, not to the byte; and for the same
+reason two hosts may differ in the last bits. A lockstep game that needs
+the same numbers on every machine wants `pow` written in Odin — the next
+rung, when a use needs it. The engine's own files and report never
+reach the wasm build: `files.odin`, `report.odin`, `output.odin`,
+`inpfile.odin`, `dump.odin` and `export.odin` are native-only, and what
+the step would have said to a report goes to stubs (`report_wasm.odin`).
 
 ## Examples
 
@@ -575,8 +606,13 @@ and, for what EPANET cannot do, two roads to one answer.
 5. **`write_inp`** — done, checked by `cmd/inp` against the toolkit's
    `EN_saveinpfile` of the same file, byte for byte on every fixture, and
    by a round trip through a file that runs the same.
-6. **wasm** — next. The package built for `wasm32`, the column addresses
-   exported, Waterworks' `solver.js` and `net.js#inp` replaced; its
-   `check.mjs` is the test, and its day must read the same as before.
-   The engine still imports `core:c/libc` for the report and the files,
-   which the step does not need; that import is the first thing to move.
+6. **wasm** — done. The engine's step path has no C library, no files
+   and no virtual memory (`cmath*.odin`, `numbers*.odin`, `arena*.odin`
+   pick per target; `text.odin` holds what every build says; the file
+   world is native-only), so `odin build wasm -target:freestanding_wasm32`
+   gives `epanet.wasm`, with `wasm/epanet.js` over it. `wasm/check.mjs`
+   lays `cmd/check`'s network through it in Node and matches `check
+   --reference` within `WASM_TOL`. Waterworks' own `solver.js` and
+   `net.js#inp` are the game's to replace, with its `check.mjs` as the
+   test, in its own repository. Next rung: `pow` in Odin, for the same
+   bits on every host.

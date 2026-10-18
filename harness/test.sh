@@ -13,6 +13,8 @@
 #   EXTRA_FIXTURES="c.inp" harness/test.sh       the usual set plus those
 #   ASAN=1 harness/test.sh     every binary under AddressSanitizer (both
 #                              sides; needs libclang-rt-<ver>-dev)
+#   WASM_TOL=1e-6 harness/test.sh   what the wasm build is held to (its pow
+#                              is the host's, so not to the byte)
 #
 # Four binaries of the same driver (harness/run.c): `c` is plain EPANET;
 # `odin` has each symbol in SWAP renamed away in its object (objcopy
@@ -31,7 +33,9 @@
 # Odin API (model.odin, sim.odin) is held to the same: cmd/run prints the
 # same lines of each fixture through load, sim_from_model and sim_step;
 # cmd/dumpnet --model and cmd/inp read each fixture as a Model and write
-# it back as a project and as a file; cmd/check lays networks in code.
+# it back as a project and as a file; cmd/check lays networks in code. The
+# wasm build (wasm/) lays cmd/check's network through epanet.js in Node and
+# must print what check --reference prints, within WASM_TOL.
 #
 # ponytail: a shell loop over clang and objcopy; cmake stays out of it.
 set -uo pipefail
@@ -49,6 +53,7 @@ SWAP=${SWAP:-"linsolve createsparse headlosscoeffs matrixcoeffs hydsolve resistc
 # The report and the files: swapped, not shadowed (their result is the file).
 SWAP_FILES=${SWAP_FILES:-"writeline writelogo clearreport writesummary writehydstat writeflowbalance writemassbalance writereport writeheader writerelerr writestatchange writecontrolaction writeruleaction writehydwarn writehyderr writetime errmsg savenetdata savehyd savehydstep saveenergy readhyd readhydstep saveoutput savefinaloutput openhydfile openoutfile closeoutfile freedata"}
 TOL=${TOL:-1e-9}
+WASM_TOL=${WASM_TOL:-1e-6}
 EP=${EPANET:-epanet-c}
 EPANET_COMMIT=444725fbf16ab28b0470ef0ed281dc4849d49583   # OWA EPANET 2.3 dev
 B=build
@@ -150,6 +155,8 @@ note "odin build run inp check"
 run "$ODIN" build cmd/run -out:"$B/run-api" $ODINFLAGS -vet -strict-style || bad "odin build run"
 run "$ODIN" build cmd/inp -out:"$B/inp-api" $ODINFLAGS -vet -strict-style || bad "odin build inp"
 run "$ODIN" build cmd/check -out:"$B/check-api" $ODINFLAGS -vet -strict-style || bad "odin build check"
+note "odin build wasm"
+run "$ODIN" build wasm -target:freestanding_wasm32 -out:"$B/epanet.wasm" -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build wasm"
 note "odin build api"
 run "$ODIN" build api -build-mode:static -out:"$B/libepanet-api.a" \
     -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build api"
@@ -159,7 +166,7 @@ run $CC $CFLAGS "$B/rebuild.o" "$B/libepanet-api.a" -lm -o "$B/rebuild-pure" || 
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
 [ "$_fail" -eq 0 ] || { tally "epanet-odin"; exit 1; }
-ok "build c odin shadow pure dumpnet rebuild run inp check"
+ok "build c odin shadow pure dumpnet rebuild run inp check wasm"
 
 # ── compare ─────────────────────────────────────────────────────────────
 # (same / same_bin from harness/same.sh: cmp first, then within TOL)
@@ -385,6 +392,24 @@ while IFS= read -r line; do
     *) bad "api check" "$line" "$B/check-api" ;;
     esac
 done <"$B/check.txt"
+
+# the wasm build's road: the same network through epanet.js, in Node
+if command -v node >/dev/null; then
+    "$B/check-api" --reference >"$B/check.ref.txt" 2>&1
+    if node wasm/check.mjs "$B/epanet.wasm" >"$B/check.wasm.txt" 2>"$B/check.wasm.err"; then
+        if cmp -s "$B/check.ref.txt" "$B/check.wasm.txt"; then
+            ok "wasm bare road bit-exact"
+        elif diff=$(TOL=$WASM_TOL same "$B/check.ref.txt" "$B/check.wasm.txt"); then
+            ok "wasm bare road within $WASM_TOL ($(wc -l <"$B/check.ref.txt") lines, node $(node --version))"
+        else
+            bad "wasm bare road" "$diff" "diff $B/check.ref.txt $B/check.wasm.txt"
+        fi
+    else
+        bad "wasm bare road" "$(head -3 "$B/check.wasm.err")" "node wasm/check.mjs $B/epanet.wasm"
+    fi
+else
+    skip "wasm bare road (no node)"
+fi
 
 
 tally "epanet-odin"

@@ -9,7 +9,6 @@ package epanet
 // the emitters, the pressure-dependent demands and the control valves
 // (matrix_coeffs). The arithmetic is EPANET's, operation for operation.
 
-import "core:c/libc"
 import "core:math"
 
 // Darcy-Weisbach friction factor constants.
@@ -153,7 +152,7 @@ emitter_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatr
 emitter_headloss :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, i: int) -> (hloss, hgrad: f64) {
 	ke := max(CSMALL, net.ke[i])
 	q := hyd.emitter_flow[i]
-	hgrad = hyd.qexp * ke * libc.pow(abs(q), hyd.qexp - 1)
+	hgrad = hyd.qexp * ke * c_pow(abs(q), hyd.qexp - 1)
 	if hgrad < hyd.rqtol {
 		hgrad = hyd.rqtol / hyd.qexp
 		hloss = hgrad * q
@@ -185,7 +184,7 @@ demand_headloss :: proc "contextless" (hyd: ^Hydraulics, i: int, dp, n: f64) -> 
 	d := hyd.demand_flow[i]
 	dfull := hyd.full_demand[i]
 	r := abs(d) / dfull
-	hgrad = n * dp * libc.pow(r, n - 1) / dfull
+	hgrad = n * dp * c_pow(r, n - 1) / dfull
 	hloss = hgrad * d / n
 	add_lower_barrier(d, &hloss, &hgrad)
 	add_upper_barrier(d - dfull, &hloss, &hgrad)
@@ -212,7 +211,7 @@ pipe_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) {
 	r := net.r[k]
 
 	hloss: f64
-	hgrad := hyd.hexp * r * libc.pow(q, hyd.hexp - 1)
+	hgrad := hyd.hexp * r * c_pow(q, hyd.hexp - 1)
 	if hgrad < hyd.rqtol {
 		hgrad = hyd.rqtol / hyd.hexp
 		hloss = hgrad * q
@@ -255,14 +254,14 @@ dw_pipe_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) {
 friction_factor :: proc "contextless" (q, e, s: f64) -> (f, dfdq: f64) {
 	w := q / s
 	if w >= A1 {
-		y1 := A8 / libc.pow(w, 0.9)
+		y1 := A8 / c_pow(w, 0.9)
 		y2 := e / 3.7 + y1
-		y3 := A9 * libc.log(y2)
+		y3 := A9 * c_log(y2)
 		f = 1 / (y3 * y3)
 		dfdq = 1.8 * f * y1 * A9 / y2 / y3 / q
 	} else {
 		y2 := e / 3.7 + AB
-		y3 := A9 * libc.log(y2)
+		y3 := A9 * c_log(y2)
 		fa := 1 / (y3 * y3)
 		fb := (2 + AC / (y2 * y3)) * fa
 		r := w / A2
@@ -303,7 +302,7 @@ pump_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) {
 		h0 := (setting * setting) * net.pump_h0[p]
 		n := net.pump_n[p]
 		if abs(n - 1) < TINY do n = 1
-		r := net.pump_r[p] * libc.pow(setting, 2 - n)
+		r := net.pump_r[p] * c_pow(setting, 2 - n)
 		if net.pump_type[p] == .CONST_HP {
 			hgrad = -r / q / q
 			if hgrad > CBIG {
@@ -316,7 +315,7 @@ pump_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) {
 			}
 			hloss = r / hyd.flow[k]
 		} else if n != 1 {
-			hgrad = n * r * libc.pow(q, n - 1)
+			hgrad = n * r * c_pow(q, n - 1)
 			if hgrad < hyd.rqtol {
 				hgrad = hyd.rqtol
 				hloss = h0 + hgrad * hyd.flow[k]

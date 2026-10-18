@@ -29,17 +29,19 @@ GROUPS = [
     ("water quality", ["quality.c", "qualroute.c", "qualreact.c"], ["epanet/quality.odin"]),
     (".inp reader", ["input1.c", "input2.c", "input3.c", "validate.c"],
                     ["epanet/parse.odin", "epanet/parse2.odin", "epanet/units.odin",
-                     "epanet/validate.odin", "epanet/project.odin"]),
-    ("report and files", ["report.c", "output.c"], ["epanet/report.odin", "epanet/output.odin"]),
+                     "epanet/validate.odin", "epanet/project.odin", "epanet/numbers.odin", "epanet/files.odin"]),
+    ("report and files", ["report.c", "output.c"], ["epanet/report.odin", "epanet/output.odin", "epanet/text.odin"]),
     ("toolkit", ["epanet.c", "project.c"],
-                ["api/api.odin", "api/edit.odin", "epanet/edit.odin", "epanet/open.odin", "epanet/export.odin", "epanet/errors.odin"]),
+                ["api/api.odin", "api/edit.odin", "epanet/edit.odin", "epanet/open.odin", "epanet/export.odin", "epanet/errors.odin",
+                 "epanet/arena.odin", "epanet/cmath.odin"]),
     (".inp writer", ["inpfile.c"], ["epanet/inpfile.odin"]),
-    ("the Odin API", [], ["epanet/model.odin", "epanet/sim.odin", "epanet/simulate.odin"]),
+    ("the Odin API", [], ["epanet/model.odin", "epanet/sim.odin", "epanet/simulate.odin", "wasm/epanet.odin"]),
     ("declarations", ["types.h", "funcs.h", "text.h", "enumstxt.h", "hash.h", "mempool.h"], []),
     ("not ported", ["epanet2.c", "hash.c", "mempool.c",
                     "util/cstr_helper.c", "util/cstr_helper.h", "util/errormanager.c",
                     "util/errormanager.h", "util/filemanager.c", "util/filemanager.h"], []),
     ("harness only", [], ["epanet/dump.odin"]),
+    ("the wasm build", [], ["epanet/arena_wasm.odin", "epanet/cmath_wasm.odin", "epanet/numbers_wasm.odin", "epanet/report_wasm.odin"]),
 ]
 NOTES = {
     "epanet2.c": "the legacy single-project API",
@@ -54,9 +56,13 @@ NOTES = {
     "epanet/model.odin": "the .inp as data, one fat Entity per component",
     "epanet/sim.odin": "a network as columns, edited at any time and stepped",
     "epanet/simulate.odin": "a whole run as tables",
+    "wasm/epanet.odin": "the engine for JavaScript: exports over a Sim and the column table",
+    "epanet/text.odin": "the names of things, a report line, the clock, the run's warning",
+    "epanet/files.odin": "what opens a file: the readers' file entry, load, write_inp, the quality run over the hydraulics file",
 }
 HARNESS = ["harness/bridge.c", "harness/run.c", "harness/rebuild.c", "harness/dumpnet.c", "harness/test.sh",
            "harness/out.sh", "cmd/dumpnet/main.odin", "cmd/run/main.odin", "cmd/inp/main.odin", "cmd/check/main.odin",
+           "wasm/check.mjs",
            "audit/audit.sh", "audit/bench.c", "audit/loc.py", "audit/render.py"]
 
 DECISION = {

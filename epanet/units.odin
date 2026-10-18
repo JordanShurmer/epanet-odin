@@ -6,7 +6,6 @@ package epanet
 // filled in (input1.c adjustdata / inittanks), and everything is put in
 // internal units: feet, cfs, seconds (initunits / convertunits).
 
-import "core:c/libc"
 import "core:strings"
 
 AGETOL : f64 : 0.01 // default water age tolerance, hours
@@ -172,7 +171,7 @@ adjust_data :: proc(p: ^Project) {
 				case .HW:
 					net.link_kw[i] = p.rfactor / net.kc[i]
 				case .DW:
-					net.link_kw[i] = p.rfactor / abs(libc.log(net.kc[i] / net.diam[i]))
+					net.link_kw[i] = p.rfactor / abs(c_log(net.kc[i] / net.diam[i]))
 				case .CM:
 					net.link_kw[i] = p.rfactor * net.kc[i]
 				}
@@ -201,7 +200,7 @@ init_tanks :: proc(p: ^Project) {
 		net.tank_vmax[j] = interp(c.x, c.y, net.tank_hmax[j])
 		net.tank_v0[j] = interp(c.x, c.y, net.tank_h0[j])
 		a := (c.y[n] - c.y[0]) / (c.x[n] - c.x[0])
-		net.tank_area[j] = libc.sqrt(4 * a / PI)
+		net.tank_area[j] = c_sqrt(4 * a / PI)
 	}
 }
 
@@ -347,9 +346,9 @@ convert_units :: proc(p: ^Project) {
 	hyd.preq /= u[.PRESSURE]
 
 	ecf := p.units == .US ? PSI_PER_FT * hyd.spgrav : M_PER_FT
-	ucf := libc.pow(u[.FLOW], hyd.qexp) / ecf
+	ucf := c_pow(u[.FLOW], hyd.qexp) / ecf
 	for i in 1 ..= net.njuncs {
-		if net.ke[i] > 0 do net.ke[i] = ucf / libc.pow(net.ke[i], hyd.qexp)
+		if net.ke[i] > 0 do net.ke[i] = ucf / c_pow(net.ke[i], hyd.qexp)
 	}
 
 	for j in 1 ..= net.ntanks {

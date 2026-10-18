@@ -9,9 +9,7 @@ package epanet
 // a Model and the file it came from run to the same bytes; dumpnet --model
 // proves that on every fixture.
 
-import "core:c/libc"
-import "core:mem/virtual"
-import "core:os"
+import "core:strconv"
 import "core:strings"
 
 // Kind is what a component is. A tank with no diameter is a reservoir to
@@ -228,19 +226,10 @@ Model :: struct {
 	report:   Report_Spec,
 	aux:      []string, // the [LABELS] and [BACKDROP] sections, line by line, written back as they were
 	problems: []Problem, // what load could not read; empty when the file was clean
-	arena:    ^virtual.Arena, // what load allocated from; nil for a Model a program built
+	arena:    ^Arena, // what load allocated from; nil for a Model a program built
 }
 
 // ── files ─────────────────────────────────────────────────────────────
-
-// load reads an .inp file. A file with bad lines still comes back, its
-// problems listed and err == .Input_Errors. Everything the Model holds
-// comes from one arena; delete_model gives it back.
-load :: proc(path: string, allocator := context.allocator) -> (m: Model, err: Error) {
-	data, rerr := os.read_entire_file_from_path(path, context.temp_allocator)
-	if rerr != nil do return m, .Cannot_Open_Input
-	return parse(string(data), allocator)
-}
 
 // parse reads an .inp file's text.
 parse :: proc(text: string, allocator := context.allocator) -> (m: Model, err: Error) {
@@ -253,8 +242,8 @@ parse :: proc(text: string, allocator := context.allocator) -> (m: Model, err: E
 		project_free(p)
 		return
 	}
-	m.arena = new(virtual.Arena)
-	if virtual.arena_init_growing(m.arena) != nil {
+	m.arena = new(Arena)
+	if !arena_init(m.arena) {
 		free(m.arena)
 		m.arena = nil
 		project_free(p)
@@ -266,29 +255,20 @@ parse :: proc(text: string, allocator := context.allocator) -> (m: Model, err: E
 }
 
 read_text_in_arena :: proc(p: ^Project, text: string) -> int {
-	context.allocator = virtual.arena_allocator(&p.arena)
+	context.allocator = arena_allocator(&p.arena)
 	return read_text(p, text)
 }
 
 model_from_project_in_arena :: proc(p: ^Project, m: ^Model) {
-	context.allocator = virtual.arena_allocator(m.arena)
+	context.allocator = arena_allocator(m.arena)
 	model_from_project(p, m)
-}
-
-// write_inp writes the Model as an .inp file, in EPANET's own layout.
-write_inp :: proc(m: ^Model, path: string) -> Error {
-	b := project_from_model(m)
-	if b.p == nil do return b.err
-	defer project_free(b.p)
-	if b.err != nil do return b.err
-	return Error(save_inp(b.p, path))
 }
 
 // delete_model gives back what load allocated. A Model a program built
 // is the program's to free.
 delete_model :: proc(m: ^Model) {
 	if m.arena == nil do return
-	virtual.arena_destroy(m.arena)
+	arena_destroy(m.arena)
 	free(m.arena)
 	m^ = {}
 }
@@ -544,8 +524,7 @@ rule_text :: proc(p: ^Project, r: int) -> string {
 
 write_g17 :: proc(sb: ^strings.Builder, x: f64) {
 	buf: [40]u8
-	n := libc.snprintf(raw_data(buf[:]), len(buf), "%.17g", x)
-	strings.write_string(sb, string(buf[:n]))
+	strings.write_string(sb, strconv.write_float(buf[:], x, 'g', 17, 64))
 }
 
 // ── the engine's project from a Model ─────────────────────────────────
@@ -573,7 +552,7 @@ project_from_model :: proc(m: ^Model) -> (b: Built) {
 		return
 	}
 	b.p = p
-	context.allocator = virtual.arena_allocator(&p.arena)
+	context.allocator = arena_allocator(&p.arena)
 	net, hyd, q := &p.net, &p.hyd, &p.q
 	set_defaults(p)
 	init_report(p)

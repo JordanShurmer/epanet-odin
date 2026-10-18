@@ -7,7 +7,6 @@ package epanet
 // when the flow corrections are small and nothing switched, or when the
 // trials run out.
 
-import "core:c/libc"
 
 // Balance is the worst remaining error after a trial and where it is.
 Balance :: struct {
@@ -309,7 +308,7 @@ pda_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) -> bool {
 			q = hyd.full_demand[i]
 		} else {
 			r := (p - hyd.pmin) / dp
-			q = hyd.full_demand[i] * libc.pow(r, hyd.pexp)
+			q = hyd.full_demand[i] * c_pow(r, hyd.pexp)
 		}
 		if abs(q - hyd.demand_flow[i]) > QTOL do converged = false
 		if hyd.demand_flow[i] + QTOL < hyd.full_demand[i] {

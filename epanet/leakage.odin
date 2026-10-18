@@ -10,7 +10,6 @@ package epanet
 // with cfa and cva summed over the node's leaking pipes when the system
 // is opened (still C's job). This file is what happens per trial.
 
-import "core:c/libc"
 import "core:math"
 
 // leakage_coeffs adds each leaking junction's two emitters to A and F.
@@ -44,7 +43,7 @@ leakage_headloss :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, i: int)
 // that keeps the leak from flowing backwards.
 eval_leak_headloss :: proc "contextless" (q, c, n0: f64) -> (hloss, hgrad: f64) {
 	n := 1 / n0
-	hgrad = n * c * libc.pow(abs(q), n - 1)
+	hgrad = n * c * c_pow(abs(q), n - 1)
 	hloss = hgrad * q / n
 	add_lower_barrier(q, &hloss, &hgrad)
 	return
@@ -79,7 +78,7 @@ leakage_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) -> boo
 		qref := 0.0
 		if h > 0 {
 			if net.leak_cfa[i] > 0 do qref = math.sqrt(h / net.leak_cfa[i])
-			if net.leak_cva[i] > 0 do qref += libc.pow(h / net.leak_cva[i], 1.5)
+			if net.leak_cva[i] > 0 do qref += c_pow(h / net.leak_cva[i], 1.5)
 		}
 		qtest := hyd.leak_qfa[i] + hyd.leak_qva[i]
 		if abs(qref - qtest) > QTOL do return false

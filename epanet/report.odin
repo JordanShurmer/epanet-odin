@@ -1,3 +1,4 @@
+#+build !wasm32
 package epanet
 
 // report.odin — the report file (EPANET's report.c): the logo, the input
@@ -14,22 +15,6 @@ import "core:c/libc"
 MAXCOUNT :: 10 // disconnected nodes listed before "and N more"
 CODEVERSION :: 20305
 
-NODE_TEXT := [?]string{"Junction", "Reservoir", "Tank"}
-LINK_TEXT := [Link_Type]string {
-	.CVPIPE = "CV", .PIPE = "Pipe", .PUMP = "Pump", .PRV = "PRV", .PSV = "PSV",
-	.PBV = "PBV", .FCV = "FCV", .TCV = "TCV", .GPV = "GPV", .PCV = "PCV",
-}
-STATUS_TEXT := [Status]string {
-	.XHEAD = "closed because cannot deliver head", .TEMPCLOSED = "temporarily closed",
-	.CLOSED = "closed", .OPEN = "open", .ACTIVE = "active",
-	.XFLOW = "open but exceeds maximum flow", .XFCV = "open but cannot deliver flow",
-	.XPRESSURE = "open but cannot deliver pressure",
-	.FILLING = "filling", .EMPTYING = "emptying", .OVERFLOWING = "overflowing",
-}
-FORMULA_TEXT := [Headloss_Formula]string{.HW = "Hazen-Williams", .DW = "Darcy-Weisbach", .CM = "Chezy-Manning"}
-DEMAND_MODEL_TEXT := [Demand_Model]string{.DDA = "DDA", .PDA = "PDA"}
-TSTAT_TEXT := [Time_Stat]string{.SERIES = "NONE", .AVG = "AVERAGE", .MIN = "MINIMUM", .MAX = "MAXIMUM", .RANGE = "RANGE"}
-
 Header_Kind :: enum {
 	STATHDR,
 	ENERHDR,
@@ -37,43 +22,7 @@ Header_Kind :: enum {
 	LINKHDR,
 }
 
-// ── a line being built ────────────────────────────────────────────────
-
-Line :: struct {
-	buf: [MAXLINE + 1]u8,
-	n:   int,
-}
-
-line_str :: #force_inline proc "contextless" (l: ^Line) -> string {
-	return string(l.buf[:l.n])
-}
-
-line_reset :: #force_inline proc "contextless" (l: ^Line) {
-	l.n = 0
-	l.buf[0] = 0
-}
-
-// puts appends s, at most max bytes of it when max >= 0 (%.70s).
-puts :: proc "contextless" (l: ^Line, s: string, max := -1) {
-	n := len(s)
-	if max >= 0 && n > max do n = max
-	if l.n + n > MAXLINE do n = MAXLINE - l.n
-	copy(l.buf[l.n:l.n + n], s[:n])
-	l.n += n
-	l.buf[l.n] = 0
-}
-
-// puts_right / puts_left: s in a field of width w (%10s / %-15s).
-puts_right :: proc "contextless" (l: ^Line, s: string, w: int) {
-	for _ in len(s) ..< w do puts(l, " ")
-	puts(l, s)
-}
-puts_left :: proc "contextless" (l: ^Line, s: string, w: int, max := -1) {
-	n := len(s)
-	if max >= 0 && n > max do n = max
-	puts(l, s, max)
-	for _ in n ..< w do puts(l, " ")
-}
+// ── numbers, through the C library's formats ─────────────────────────
 
 // putf / puti append one number through the C library's format.
 putf :: proc "contextless" (l: ^Line, format: cstring, x: f64) {
@@ -90,12 +39,6 @@ putfp :: proc "contextless" (l: ^Line, prec: int, x: f64) {
 	l.n = min(l.n + n, MAXLINE)
 }
 
-// fill: n+1 of ch (EPANET's fillstr writes one more than asked).
-fill :: proc "contextless" (l: ^Line, ch: u8, n: int) {
-	line_reset(l)
-	for _ in 0 ..= n do puts(l, string([]u8{ch}))
-}
-
 // cputs: a NUL-terminated string to the file (fputs).
 cputs :: proc "contextless" (s: cstring, f: ^libc.FILE) -> int {
 	return int(libc.fwrite(rawptr(s), 1, len(s), f))
@@ -104,21 +47,6 @@ cputs :: proc "contextless" (s: cstring, f: ^libc.FILE) -> int {
 // cstr: a C string as an Odin string.
 cstr :: #force_inline proc "contextless" (s: [^]u8) -> string {
 	return string(cstring(s))
-}
-
-// clocktime: seconds as h:mm:ss, in the caller's buffer.
-clocktime :: proc "contextless" (buf: ^[16]u8, seconds: i64) -> string {
-	h := seconds / 3600
-	m := seconds % 3600 / 60
-	s := seconds - 3600 * h - 60 * m
-	n := libc.snprintf(raw_data(buf[:]), 16, "%01d:%02d:%02d", c.int(h), c.int(m), c.int(s))
-	return string(buf[:n])
-}
-
-node_type_of :: proc "contextless" (net: ^Network, i: int) -> int {
-	if i <= net.njuncs do return 0
-	if net.tank_area[i - net.njuncs] == 0 do return 1
-	return 2
 }
 
 // ── the file ──────────────────────────────────────────────────────────
@@ -687,96 +615,6 @@ writeruleaction :: proc "contextless" (p: ^Project, k: int, rule_id: string) {
 
 // writehydwarn: the warnings of a solved period, in EPANET's order; the
 // code of the last one found is the period's warning code.
-writehydwarn :: proc "contextless" (p: ^Project, iter: int, relerr: f64) -> int {
-	net, hyd, r := &p.net, &p.hyd, &p.rpt
-	l: Line
-	abuf: [16]u8
-	flag := 0
-	if iter > hyd.max_iter && relerr <= hyd.hacc {
-		if r.messages {
-			puts(&l, "WARNING: Maximum trials exceeded at ")
-			puts(&l, clocktime(&abuf, p.times.htime))
-			puts(&l, " hrs. System may be unstable.")
-			writeline(p, line_str(&l))
-		}
-		flag = 2
-	}
-	if hyd.demand_model == .DDA {
-		hyd.deficient_nodes = 0
-		for i in 1 ..= net.njuncs {
-			if hyd.head[i] < net.el[i] && hyd.node_demand[i] > 0 do hyd.deficient_nodes += 1
-		}
-		if hyd.deficient_nodes > 0 {
-			if r.messages {
-				line_reset(&l)
-				puts(&l, "WARNING: Negative pressures at ")
-				puts(&l, clocktime(&abuf, p.times.htime))
-				puts(&l, " hrs.")
-				writeline(p, line_str(&l))
-			}
-			flag = 6
-		}
-	}
-	for i in 1 ..= net.nvalves {
-		j := int(net.valve_link[i])
-		if hyd.status[j] >= .XFCV {
-			if r.messages {
-				line_reset(&l)
-				puts(&l, "WARNING: ")
-				puts(&l, LINK_TEXT[net.link_type[j]])
-				puts(&l, " ")
-				puts(&l, p.link_id[j])
-				puts(&l, " ")
-				puts(&l, STATUS_TEXT[hyd.status[j]])
-				puts(&l, " at ")
-				puts(&l, clocktime(&abuf, p.times.htime))
-				puts(&l, " hrs.")
-				writeline(p, line_str(&l))
-			}
-			flag = 5
-		}
-	}
-	for i in 1 ..= net.npumps {
-		j := int(net.pump_link[i])
-		s := hyd.status[j]
-		if s >= .OPEN {
-			if hyd.flow[j] > hyd.setting[j] * p.pump_qmax[i] do s = .XFLOW
-			if hyd.flow[j] < 0 do s = .XHEAD
-		}
-		if s == .XHEAD || s == .XFLOW {
-			if r.messages {
-				line_reset(&l)
-				puts(&l, "WARNING: Pump ")
-				puts(&l, p.link_id[j])
-				puts(&l, " ")
-				puts(&l, STATUS_TEXT[s])
-				puts(&l, " at ")
-				puts(&l, clocktime(&abuf, p.times.htime))
-				puts(&l, " hrs.")
-				writeline(p, line_str(&l))
-			}
-			flag = 4
-		}
-	}
-	if iter > hyd.max_iter && relerr > hyd.hacc {
-		if r.messages {
-			line_reset(&l)
-			puts(&l, "WARNING: System unbalanced at ")
-			puts(&l, clocktime(&abuf, p.times.htime))
-			puts(&l, " hrs.")
-			if hyd.extra_iter == -1 do puts(&l, " EXECUTION HALTED.")
-			writeline(p, line_str(&l))
-		}
-		flag = 1
-	}
-	if flag > 0 {
-		disconnected(p)
-		p.warnflag = flag
-		if r.messages do writeline(p, " ")
-	}
-	return flag
-}
-
 writehyderr :: proc "contextless" (p: ^Project, errnode: int) {
 	if p.rpt.messages {
 		l: Line

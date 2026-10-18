@@ -2,12 +2,10 @@ package epanet
 
 // open.odin — opening and closing the solvers on a project the package
 // owns (EPANET's openhyd/closehyd, openqual/closequal, the leakage setup
-// and the adjacency lists), and the quality run's orchestration
-// (initqual, runqual, nextqual, stepqual) that reads hydraulics back
-// from the file. The per-run arrays come from the heap and go back to it
+// and the adjacency lists). The quality run's orchestration over the
+// hydraulics file (initqual, runqual, nextqual, stepqual) is in
+// files.odin. The per-run arrays come from the heap and go back to it
 // at close, so a project can open and close its solvers freely.
-
-import "core:c/libc"
 
 // build_adjlists lists each node's links as EPANET does: a node's run
 // holds the links in reverse order of their index (EPANET pushes each
@@ -146,7 +144,7 @@ open_leakage :: proc(p: ^Project) {
 		c_area := net.leak_cfa[i]
 		net.leak_cfa[i] = c_area > 0 ? 1.0 / (c_area * c_area) : 0
 		c_expan := net.leak_cva[i]
-		net.leak_cva[i] = c_expan > 0 ? 1.0 / libc.pow(c_expan, 2. / 3.) : 0
+		net.leak_cva[i] = c_expan > 0 ? 1.0 / c_pow(c_expan, 2. / 3.) : 0
 		if net.leak_cfa[i] > 0 do hyd.leak_qfa[i] = 0.001
 		if net.leak_cva[i] > 0 do hyd.leak_qva[i] = 0.001
 	}
@@ -168,8 +166,8 @@ find_link_leakage :: proc "contextless" (p: ^Project, i: int) -> f64 {
 	c *= net.len[i] / 100. / 2.0
 	c *= 1.0e-6
 	q1, q2 := 0.0, 0.0
-	if n1 <= net.njuncs do q1 = c * (a + m * h1) * libc.sqrt(h1)
-	if n2 <= net.njuncs do q2 = c * (a + m * h2) * libc.sqrt(h2)
+	if n1 <= net.njuncs do q1 = c * (a + m * h1) * c_sqrt(h1)
+	if n2 <= net.njuncs do q2 = c * (a + m * h2) * c_sqrt(h2)
 	if n2 > net.njuncs do q1 *= 2.0
 	if n1 > net.njuncs do q2 *= 2.0
 	return q1 + q2
@@ -204,101 +202,4 @@ close_qual :: proc(p: ^Project) {
 	q.flow_dir, q.pipe_rate, q.link_rc, q.sorted, q.source_mass = nil, nil, nil, nil, nil
 	if q.segs != nil do segments_delete(q.segs)
 	q.segs = nil
-}
-
-// initqual starts the quality run at time zero.
-initqual :: proc(p: ^Project) -> int {
-	t := &p.times
-	if !p.open_hflag do libc.fseek(p.out.hyd_file, libc.long(p.out.hyd_offset), .SET)
-	t.qtime = 0
-	t.htime = 0
-	t.rtime = t.rstart
-	p.rpt.nperiods = 0
-	init_qual(&p.net, &p.hyd, &p.q)
-	return 0
-}
-
-// runqual brings the hydraulics for the next period in (from the file
-// when the hydraulic solver is closed) and saves the period's results.
-runqual :: proc(p: ^Project) -> (t: i64, errcode: int) {
-	q, tm := &p.q, &p.times
-	t = tm.qtime
-	hydtime, hydstep: i64
-	if tm.qtime == tm.htime {
-		if !p.open_hflag {
-			if !readhyd(p, &hydtime) do return t, 307
-			if !readhydstep(p, &hydstep) do return t, 307
-			tm.htime = hydtime
-		}
-		if tm.htime >= tm.rtime {
-			if p.out.saveflag {
-				errcode = saveoutput(p)
-				p.rpt.nperiods += 1
-			}
-			tm.rtime += tm.rstep
-		}
-		if errcode != 0 do return
-		if q.kind != .NONE && tm.qtime < tm.dur {
-			errcode = new_hydraulics(&p.net, &p.hyd, q)
-		}
-		if !p.open_hflag do tm.htime = hydtime + hydstep
-	}
-	return
-}
-
-// nextqual moves quality through the period to the next hydraulic time.
-nextqual :: proc(p: ^Project) -> (tstep: i64, errcode: int) {
-	q, tm := &p.q, &p.times
-	hydstep: i64 = 0
-	if tm.htime <= tm.dur do hydstep = tm.htime - tm.qtime
-	if q.kind != .NONE && hydstep > 0 {
-		qtime: i64 = 0
-		for !q.out_of_memory && qtime < hydstep {
-			dt := min(tm.qstep, hydstep - qtime)
-			qtime += dt
-			transport(&p.net, &p.hyd, tm, q, dt)
-		}
-		if q.out_of_memory do errcode = 101
-	}
-	eval_mass_balance(&p.net, q)
-	if errcode == 0 do tstep = hydstep
-	tm.qtime += hydstep
-	if errcode == 0 && tstep == 0 {
-		if q.kind != .NONE && p.rpt.status != 0 do writemassbalance(p)
-		if p.out.saveflag do errcode = savefinaloutput(p)
-	}
-	return
-}
-
-// stepqual moves quality one quality time step, reading hydraulics as
-// it needs them.
-stepqual :: proc(p: ^Project) -> (tleft: i64, errcode: int) {
-	q, tm := &p.q, &p.times
-	tstep := tm.qstep
-	for {
-		dt := tstep
-		hstep := tm.htime - tm.qtime
-		if hstep < dt {
-			dt = hstep
-			if q.kind != .NONE do transport(&p.net, &p.hyd, tm, q, dt)
-			tm.qtime += dt
-			if p.open_hflag do break
-			t: i64
-			t, errcode = runqual(p)
-			tm.qtime = t
-		} else {
-			if q.kind != .NONE do transport(&p.net, &p.hyd, tm, q, dt)
-			tm.qtime += dt
-		}
-		tstep -= dt
-		if q.out_of_memory do errcode = 101
-		if errcode != 0 || tstep <= 0 do break
-	}
-	eval_mass_balance(&p.net, q)
-	tleft = tm.dur - tm.qtime
-	if errcode == 0 && tleft == 0 {
-		if q.kind != .NONE && p.rpt.status != 0 do writemassbalance(p)
-		if p.out.saveflag do errcode = savefinaloutput(p)
-	}
-	return
 }

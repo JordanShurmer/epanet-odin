@@ -1,3 +1,4 @@
+#+build !wasm32
 package epanet
 
 // output.odin — the binary files (EPANET's output.c and the file opening

@@ -9,7 +9,6 @@ package api
 import "base:runtime"
 import "core:c"
 import "core:c/libc"
-import "core:mem/virtual"
 import "core:strings"
 
 import ep "../epanet"
@@ -21,7 +20,7 @@ SET_CLOSED :: -1.e10
 // arena_context: the context an editing call runs in.
 arena_context :: proc "contextless" (p: ^Project) -> runtime.Context {
 	context = runtime.default_context()
-	context.allocator = virtual.arena_allocator(&p.arena)
+	context.allocator = ep.arena_allocator(&p.arena)
 	return context
 }
 

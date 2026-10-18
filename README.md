@@ -46,9 +46,17 @@ epanet/         the Odin package `epanet` — the rewrite
   report.odin     the report file: logo, summary, status lines, warnings,
                   energy and results tables, errors
   output.odin     the binary output file and the hydraulics file
-  errors.odin     EPANET's error messages by code
-  open.odin       opening and closing the solvers on an owned project; the
-                  quality run's orchestration over the hydraulics file
+  errors.odin     EPANET's error messages by code; Error and Warning as values
+  text.odin       what every build says: the names of things, a report line,
+                  the clock as h:mm:ss, the run's warning code (writehydwarn)
+  open.odin       opening and closing the solvers on an owned project
+  files.odin      what opens a file: the readers' file entry, load, write_inp,
+                  the quality run read back from the hydraulics file (native only)
+  cmath.odin      pow, log and sqrt from the C library; cmath_wasm.odin: core:math
+  numbers.odin    a number read by strtod; numbers_wasm.odin: by strconv
+  arena.odin      a project's growing arena, and File; arena_wasm.odin: a block
+                  arena over the wasm heap
+  report_wasm.odin  what the step would say to a report, with nowhere to say it
   edit.odin       the project edited after it is read: tables that grow, a
                   node, link, demand, pattern, curve, control or rule added or
                   taken out with every index moved
@@ -68,6 +76,11 @@ cmd/dumpnet/    reads an .inp with the Odin reader and prints the project
 cmd/run/        runs an .inp through the Odin API and prints what harness/run.c prints
 cmd/inp/        reads an .inp as a Model and writes it back
 cmd/check/      the Odin API's own proofs: networks laid in code, two roads to one answer
+wasm/           the engine for JavaScript
+  epanet.odin     the exports: a Sim made, rows added, the column table, step
+  epanet.js       the loader and the typed-array views over the columns
+  check.mjs       cmd/check's network through epanet.js in Node, printed as
+                  `check --reference` prints it
 harness/        the plug-in validation
   test.sh         builds the four binaries (plain EPANET, the plug-in build, its
                   shadow, and the pure Odin toolkit) and the Odin API's commands,
@@ -125,7 +138,9 @@ file read as a `Model` and built back dumps as the reader's project does
 toolkit writes. `cmd/check` adds the road no file can take: a network laid
 with `node_add` and `link_add` and stepped by hand must give the same
 bytes as the same network as a `Model` through `simulate`, and two
-chemicals on one `Sim` the same bytes as two single-chemical runs. The shadow snapshots every
+chemicals on one `Sim` the same bytes as two single-chemical runs. The
+wasm build takes that road too, through `wasm/epanet.js` in Node, within
+`WASM_TOL` (1e-6: its `pow` is the host's). The shadow snapshots every
 array and struct field the engine writes before each call, so one pattern
 covers every symbol. The one thing it cannot do twice is evaluate the rules,
 which keep state of their own: on a network with rules the time step runs
@@ -349,12 +364,23 @@ Ported, equivalent on every fixture (bit-exact up to the tag `Identical`):
     rather than cloning the solver's state, so a copy goes on within the
     solver's accuracy, not to the bit.
 
+13. **WebAssembly** — the engine's step path with no C library, no
+    files and no virtual memory: `cmath`, `numbers` and `arena` pick
+    their implementation per target, `text.odin` holds what every build
+    says (the names, a report line, the clock, the run's warning code),
+    the file world (`files.odin`, `report.odin`, `output.odin`,
+    `inpfile.odin`, `dump.odin`, `export.odin`) is native-only and what
+    the step would say to a report goes to stubs on wasm. The native
+    build is the same bytes as before (the harness says so). `wasm/`
+    exports a Sim over plain numbers and the column table, `epanet.js`
+    wraps it in typed-array views, and `check.mjs` lays `cmd/check`'s
+    network through it in Node and matches `check --reference` within
+    `WASM_TOL`: the one import the module has is `pow`, the host's.
+
 Next:
 
-13. **WebAssembly** — the package built for `wasm32`, the column
-    addresses exported, Waterworks' `solver.js` replaced. The engine
-    still imports `core:c/libc` for the report and the files; the step
-    itself does not need either.
+14. **`pow` in Odin** — the same bits on every host, for a lockstep
+    game; then the wasm build is held to the byte.
 
 ## Living inside bywater-mill
 
@@ -411,6 +437,7 @@ epanet-odin-v0.1.0-linux-amd64/
                          is EPANET's), LICENSE-EPANET
   bin/dumpnet            reads an .inp and prints the project
   bin/run                runs an .inp through the Odin API and prints every result
+  wasm/epanet.wasm       the engine for JavaScript, with wasm/epanet.js to load it
   LICENSE  README.md
 ```
 

@@ -1,3 +1,4 @@
+#+build !wasm32
 package epanet
 
 // inpfile.odin — the project written back as an EPANET input file
@@ -41,16 +42,6 @@ INP_RULE_WORD := [Rule_Logic]string {
 	.RULE = "RULE", .IF = "IF", .AND = "AND", .OR = "OR", .THEN = "THEN", .ELSE = "ELSE",
 	.PRIORITY = "PRIO", .DISABLED = "DISABLED", .ERROR = "",
 }
-INP_RULE_VARIABLE := [Rule_Variable]string {
-	.DEMAND = "DEMAND", .HEAD = "HEAD", .GRADE = "GRADE", .LEVEL = "LEVEL", .PRESSURE = "PRESSURE",
-	.FLOW = "FLOW", .STATUS = "STATUS", .SETTING = "SETTING", .POWER = "POWER", .TIME = "TIME",
-	.CLOCKTIME = "CLOCKTIME", .FILLTIME = "FILLTIME", .DRAINTIME = "DRAINTIME",
-}
-INP_RULE_OPERATOR := [Rule_Op]string {
-	.EQ = "=", .NE = "<>", .LE = "<=", .GE = ">=", .LT = "<", .GT = ">",
-	.IS = "IS", .NOT = "NOT", .BELOW = "BELOW", .ABOVE = "ABOVE",
-}
-INP_RULE_VALUE := [Rule_Status]string{.IS_NUMBER = "XXXX", .IS_OPEN = "OPEN", .IS_CLOSED = "CLOSED", .IS_ACTIVE = "ACTIVE"}
 YES_NO := [2]string{"NO", "YES"}
 
 // tc: s as a C string, until the temp allocator is freed.
@@ -543,31 +534,6 @@ write_rule :: proc(p: ^Project, f: ^libc.FILE, r: int) {
 		write_action(p, f, int(k))
 	}
 	if net.rule_priority[r] > 0 do libc.fprintf(f, "\nPRIORITY %f", net.rule_priority[r])
-}
-
-rule_object_text :: proc "contextless" (p: ^Project, object: Rule_Object, index: i32) -> string {
-	net := &p.net
-	#partial switch object {
-	case .NODE:
-		switch node_type_of(net, int(index)) {
-		case 0:
-			return "JUNCTION"
-		case 1:
-			return "RESERVOIR"
-		case 2:
-			return "TANK"
-		}
-		return "NODE"
-	case .LINK:
-		#partial switch net.link_type[index] {
-		case .CVPIPE, .PIPE:
-			return "PIPE"
-		case .PUMP:
-			return "PUMP"
-		}
-		return "VALVE"
-	}
-	return "SYSTEM"
 }
 
 // time_text: seconds as h:mm:ss, or hours past a week.

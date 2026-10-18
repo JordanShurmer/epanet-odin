@@ -3,6 +3,8 @@ package check
 // check — the Odin API's own proofs: two roads to one answer.
 //
 //   check            every check, one `ok` or `bad` line each; exit 1 on a bad
+//   check --reference    the network below with two chemicals, stepped for a
+//                        day: every hour mark, as wasm/check.mjs prints it
 //
 // The roads: a network laid with node_add and link_add and stepped by
 // hand against the same network as a Model through simulate (the same
@@ -432,7 +434,42 @@ model_written_and_read :: proc() {
 	ok(name)
 }
 
+// reference prints the bare road with two chemicals, hour by hour, in
+// the lines wasm/check.mjs prints: the wasm build is held to these.
+reference :: proc() {
+	sim := the_sim()
+	defer epanet.sim_delete(&sim)
+	init := make([]f64, sim.nodes.count)
+	for &x in init do x = 0.5
+	sources := make([]epanet.Source, 1)
+	sources[0] = {node = 0, kind = .CONCEN, strength = 1}
+	chems := make([]epanet.Chemical, 2)
+	chems[0] = {kind = .CHEM, decay = -0.5, wall = -1, init = init, sources = sources}
+	chems[1] = {kind = .AGE}
+	sim.chemicals = chems
+	for at := i32(0); at < 24 * 3600 + 1; at = sim.t {
+		if _, _, err := epanet.sim_step(&sim); err != nil {
+			fmt.eprintf("reference: step at %d: %s\n", at, epanet.error_text(err))
+			os.exit(2)
+		}
+		if !sim.at_report do continue
+		h := int(at / 3600)
+		o, lo := &sim.out, &sim.link_out
+		for i in 0 ..< sim.nodes.count {
+			fmt.printf("%d node %d %.17g %.17g %.17g %.17g %.17g\n", h, i, o.pressure[i], o.head[i], o.outflow[i], o.quality[0][i], o.quality[1][i])
+		}
+		for k in 0 ..< sim.links.count {
+			fmt.printf("%d link %d %.17g %.17g %.17g %.17g\n", h, k, lo.flow[k], lo.headloss[k], lo.quality[0][k], lo.quality[1][k])
+		}
+	}
+	fmt.printf("massbalance %.17g %.17g\n", sim.balance[0].ratio, sim.balance[1].ratio)
+}
+
 main :: proc() {
+	if len(os.args) == 2 && os.args[1] == "--reference" {
+		reference()
+		return
+	}
 	bare_equals_model()
 	two_chemicals()
 	loose_node_left_out()

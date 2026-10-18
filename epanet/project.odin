@@ -7,8 +7,6 @@ package epanet
 // internal units, the validator (validate.odin) checks it. Everything a
 // project holds comes out of its own arena, so project_free is one call.
 
-import "core:c/libc"
-import "core:mem/virtual"
 
 // Field numbers EPANET's reported variables; ucf[field] converts the
 // internal value to the user's units.
@@ -61,7 +59,7 @@ Report_Options :: struct {
 	fields:                    [Field]Report_Field,
 	rpt1_fname, rpt2_fname:    string,
 	// the file in progress
-	file:                      ^libc.FILE,
+	file:                      File,
 	rptflag:                   bool, // the formatted report is wanted
 	fprinterr:                 bool, // a write failed
 	page_num, line_num:        int,
@@ -76,11 +74,11 @@ Outfile :: struct {
 	outflag, hydflag:                    Hyd_File,
 	save_hflag, save_qflag, saveflag:    bool,
 	hyd_offset, out_offset1, out_offset2: i64,
-	out_file, hyd_file, tmp_out_file:    ^libc.FILE,
+	out_file, hyd_file, tmp_out_file:    File,
 }
 
 Project :: struct {
-	arena: virtual.Arena, // every allocation below lives here
+	arena: Arena, // every allocation below lives here (arena.odin)
 	net:   Network,
 	hyd:   Hydraulics,
 	m:     Smatrix,
@@ -128,7 +126,7 @@ Project :: struct {
 
 // project_free gives back everything the project holds.
 project_free :: proc(p: ^Project) {
-	virtual.arena_destroy(&p.arena)
+	arena_destroy(&p.arena)
 	free(p)
 }
 

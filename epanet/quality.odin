@@ -10,7 +10,6 @@ package epanet
 // through the same prev field. The chains and every operation on them
 // are EPANET's, so the numbers come out the same.
 
-import "core:c/libc"
 
 // Mass_Balance is the running account of a constituent.
 Mass_Balance :: struct {
@@ -210,7 +209,7 @@ getucf :: proc "contextless" (order0: f64) -> f64 {
 	order := order0
 	if order < 0 do order = 0
 	if order == 1 do return 1
-	return 1 / libc.pow(L_PER_FT3, order - 1)
+	return 1 / c_pow(L_PER_FT3, order - 1)
 }
 
 // new_hydraulics is what a new hydraulic solution needs before transport:
@@ -587,10 +586,10 @@ pipe_rate :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality, k
 	if re < 1 {
 		sh = 2
 	} else if re >= 2300 {
-		sh = 0.0149 * libc.pow(re, 0.88) * libc.pow(q.sc, 0.333)
+		sh = 0.0149 * c_pow(re, 0.88) * c_pow(q.sc, 0.333)
 	} else {
 		y := d / net.len[k] * re * q.sc
-		sh = 3.65 + 0.0668 * y / (1 + 0.04 * libc.pow(y, 0.667))
+		sh = 3.65 + 0.0668 * y / (1 + 0.04 * c_pow(y, 0.667))
 	}
 	kf := sh * q.diffus / d
 	if q.wall_order == 0 do return kf
@@ -652,7 +651,7 @@ bulk_rate :: proc "contextless" (q: ^Quality, c0, kb, order: f64) -> f64 {
 		} else if order == 2 {
 			c = c1 * c
 		} else {
-			c = c1 * libc.pow(max(0, c), order - 1)
+			c = c1 * c_pow(max(0, c), order - 1)
 		}
 	}
 	if c < 0 do c = 0

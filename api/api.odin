@@ -14,7 +14,6 @@ package api
 import "base:runtime"
 import "core:c"
 import "core:c/libc"
-import "core:mem/virtual"
 import "core:strings"
 import posix "core:sys/posix"
 
@@ -44,7 +43,7 @@ put_str :: proc "contextless" (dst: [^]u8, s: string, max: int) {
 
 // keep: a C string the project holds on to (from its arena).
 keep :: proc(p: ^Project, s: cstring) -> string {
-	return strings.clone(string(s), virtual.arena_allocator(&p.arena))
+	return strings.clone(string(s), ep.arena_allocator(&p.arena))
 }
 
 cpath :: proc "contextless" (buf: ^[1024]u8, s: string) -> cstring {
@@ -68,7 +67,7 @@ tmp_name :: proc(p: ^Project) -> string {
 	if fd < 0 do return ""
 	posix.close(fd)
 	libc.remove(cstring(&buf[0]))
-	return strings.clone(string(cstring(&buf[0])), virtual.arena_allocator(&p.arena))
+	return strings.clone(string(cstring(&buf[0])), ep.arena_allocator(&p.arena))
 }
 
 // sync_flags: the engine reads a few of the project's flags from its

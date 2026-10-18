@@ -5,7 +5,6 @@ package epanet
 // of the next time step with the tank levels it ends at, pump energy, and
 // the small things that set a link's flow, status and setting.
 
-import "core:c/libc"
 import "core:math"
 
 // interp reads y at xx off a curve by straight lines, holding the end
@@ -43,13 +42,13 @@ resist_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) {
 		e, d, l := net.kc[k], net.diam[k], net.len[k]
 		switch hyd.formflag {
 		case .HW:
-			net.r[k] = 4.727 * l / libc.pow(e, hyd.hexp) / libc.pow(d, 4.871)
+			net.r[k] = 4.727 * l / c_pow(e, hyd.hexp) / c_pow(d, 4.871)
 		case .DW:
 			a := math.PI * (d * d) / 4
 			net.r[k] = l / 2 / 32.2 / d / (a * a)
 		case .CM:
 			x := 4 * e / (1.49 * math.PI * (d * d))
-			net.r[k] = (x * x) * libc.pow(d / 4, -1.333) * l
+			net.r[k] = (x * x) * c_pow(d / 4, -1.333) * l
 		}
 	case .PUMP:
 		net.r[k] = CBIG
@@ -409,7 +408,7 @@ get_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) -> (k
 			q4eff := q / speed * net.ucf_flow
 			e = interp(net.curves[i].x, net.curves[i].y, q4eff)
 			// Sarbu and Borza's speed adjustment.
-			e = 100 - ((100 - e) * libc.pow(1 / speed, 0.1))
+			e = 100 - ((100 - e) * c_pow(1 / speed, 0.1))
 		}
 		e = min(e, 100)
 		e = max(e, 1)

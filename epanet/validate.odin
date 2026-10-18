@@ -5,7 +5,6 @@ package epanet
 // curves with data. Returns EPANET's error code; the messages are the
 // caller's.
 
-import "core:c/libc"
 
 validate_tanks :: proc(p: ^Project) -> bool {
 	net := &p.net
@@ -53,9 +52,9 @@ powerfunc_pump :: proc(h0, h1, h2, q1, q2: f64) -> (a, b, c: f64, ok: bool) {
 	a = h0
 	h4 := h0 - h1
 	h5 := h0 - h2
-	c = libc.log(h5 / h4) / libc.log(q2 / q1)
+	c = c_log(h5 / h4) / c_log(q2 / q1)
 	if c <= 0 || c > 20 do return
-	b = -h4 / libc.pow(q1, c)
+	b = -h4 / c_pow(q1, c)
 	if b >= 0 do return
 	ok = true
 	return
@@ -107,10 +106,10 @@ pump_curve_pump :: proc(p: ^Project, m: int, ci: int) -> int {
 		return 227
 	}
 	net.pump_h0[m] = -a / p.ucf[.HEAD]
-	net.pump_r[m] = -b * (libc.pow(p.ucf[.FLOW], cc) / p.ucf[.HEAD])
+	net.pump_r[m] = -b * (c_pow(p.ucf[.FLOW], cc) / p.ucf[.HEAD])
 	net.pump_n[m] = cc
 	net.pump_q0[m] = q1 / p.ucf[.FLOW]
-	p.pump_qmax[m] = libc.pow(-a / b, 1 / cc) / p.ucf[.FLOW]
+	p.pump_qmax[m] = c_pow(-a / b, 1 / cc) / p.ucf[.FLOW]
 	net.pump_hmax[m] = h0 / p.ucf[.HEAD]
 	return 0
 }
