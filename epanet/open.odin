@@ -118,12 +118,8 @@ open_leakage :: proc(p: ^Project) {
 		if net.leak_area[k] > 0 || net.leak_expan[k] > 0 do hyd.has_leakage = true
 	}
 	if !hyd.has_leakage do return
-	// (products of constants go through variables: Odin would fold them
-	// exactly, where C rounds each constant first)
-	c_orif: f64 = 4.8149766
-	c_orif *= 1.e-6
-	m_per_ft := M_PER_FT
-	m2 := m_per_ft * m_per_ft
+	c_orif := 4.8149766e-6
+	m2 := M_PER_FT * M_PER_FT
 	for k in 1 ..= net.nlinks {
 		if net.link_type[k] > .PIPE do continue
 		n1, n2 := net.n1[k], net.n2[k]

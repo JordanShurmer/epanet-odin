@@ -86,8 +86,8 @@ EN_init :: proc "c" (p: ^Project, rpt_file, out_file: cstring, units_type, headl
 	net.action_link = make([]i32, 1)
 	net.action_status = make([]ep.Rule_Status, 1)
 	net.action_setting = make([]f64, 1)
-	ep.adjust_data(p)
 	ep.init_report(p)
+	ep.adjust_data(p)
 	ep.init_units(p)
 	ep.init_tanks(p)
 	ep.convert_units(p)
@@ -617,8 +617,8 @@ EN_setlinknodes :: proc "c" (p: ^Project, index, node1, node2: c.int) -> c.int {
 	if solver_open(p) do return 262
 	k := int(index)
 	if k <= 0 || k > net.nlinks do return 204
-	if node1 < 0 || int(node1) > net.nnodes do return 203
-	if node2 < 0 || int(node2) > net.nnodes do return 203
+	if node1 < 1 || int(node1) > net.nnodes do return 203
+	if node2 < 1 || int(node2) > net.nnodes do return 203
 	if node1 == node2 do return 222
 	if node1 == net.n1[k] && node2 == net.n2[k] do return 0
 	if kind := net.link_type[k]; kind > .PUMP {
@@ -1015,7 +1015,7 @@ EN_deletecurve :: proc "c" (p: ^Project, index: c.int) -> c.int {
 	context = arena_context(p)
 	if !p.openflag do return 102
 	if solver_open(p) do return 262
-	if index < 1 || int(index) >= len(p.net.curves) do return 205
+	if index < 1 || int(index) >= len(p.net.curves) do return 206
 	ep.delete_curve_entry(p, int(index))
 	return 0
 }
@@ -1041,7 +1041,7 @@ EN_setcurveid :: proc "c" (p: ^Project, index: c.int, id: cstring) -> c.int {
 	context = arena_context(p)
 	if !p.openflag do return 102
 	n := len(p.net.curves) - 1
-	if index < 1 || int(index) > n do return 205
+	if index < 1 || int(index) > n do return 206
 	s := string(id)
 	if !name_valid(s) do return 252
 	for i in 1 ..= n do if i != int(index) && p.curve_id[i] == s do return 215
@@ -1227,7 +1227,7 @@ EN_setrulepriority :: proc "c" (p: ^Project, index: c.int, priority: f64) -> c.i
 EN_setruleenabled :: proc "c" (p: ^Project, index, enabled: c.int) -> c.int {
 	if enabled != 0 && enabled != 1 do return 202
 	if !p.openflag do return 102
-	if index <= 0 || int(index) > p.net.nrules do return 241
+	if index <= 0 || int(index) > p.net.nrules do return 257
 	p.net.rule_enabled[index] = enabled == 1
 	return 0
 }
@@ -1497,7 +1497,7 @@ EN_settimeparam :: proc "c" (p: ^Project, param: c.int, value: c.long) -> c.int 
 		t.rstep = v
 		if t.hstep > t.rstep do t.hstep = t.rstep
 	case 6:
-		if t.rstart > t.dur do return 213
+		if v > t.dur do return 213
 		t.rstart = v
 	case 7:
 		if v == 0 do return 213
@@ -1558,6 +1558,7 @@ EN_setqualtype :: proc "c" (p: ^Project, qual_type: c.int, chem_name, chem_units
 	u[.QUALITY], u[.LINKQUAL], u[.REACTRATE] = ccf, ccf, ccf
 	q.ctol /= u[.QUALITY]
 	ep.sync_ucf(p)
+	if old == .NONE && q.kind != .NONE do p.rpt.fields[.QUALITY].enabled = true
 	return 0
 }
 

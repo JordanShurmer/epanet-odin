@@ -282,6 +282,7 @@ static int rebuild(EN_Project p, EN_Project q, const char *rpt)
     EN_getqualinfo(p, &t, chem, chemunits, &idx);
     if (t == EN_TRACE) EN_getnodeid(p, idx, id); else id[0] = 0;
     TRY("setqualtype", EN_setqualtype(q, t, chem, chemunits, id));
+    TRY("setreport", EN_setreport(q, t == EN_NONE ? "QUALITY NO" : "QUALITY YES"));
     EN_getoption(p, EN_TOLERANCE, &v);
     TRY("set tolerance", EN_setoption(q, EN_TOLERANCE, v));
     EN_getoption(p, EN_CONCENLIMIT, &v);

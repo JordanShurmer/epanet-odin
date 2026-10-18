@@ -144,10 +144,7 @@ adjust_data :: proc(p: ^Project) {
 	if p.pressure_units == .DEFAULTUNIT do p.pressure_units = p.units == .SI ? .METERS : .PSI
 
 	ucf := 1.0
-	if p.units == .SI {
-		m_per_ft := M_PER_FT // (a variable: Odin folds constants exactly, C rounds first)
-		ucf = m_per_ft * m_per_ft
-	}
+	if p.units == .SI do ucf = M_PER_FT * M_PER_FT
 	if hyd.viscos == MISSING {
 		hyd.viscos = VISCOS
 	} else if hyd.viscos > 1e-3 {
@@ -274,11 +271,9 @@ init_units :: proc(p: ^Project) {
 	case .METERS:
 		pcf = M_PER_FT
 	case .KPA:
-		kpa := KPA_PER_PSI
-		pcf = kpa * PSI_PER_FT * p.hyd.spgrav
+		pcf = KPA_PER_PSI * PSI_PER_FT * p.hyd.spgrav
 	case .BAR:
-		bar := BAR_PER_PSI
-		pcf = bar * PSI_PER_FT * p.hyd.spgrav
+		pcf = BAR_PER_PSI * PSI_PER_FT * p.hyd.spgrav
 	case .FEET:
 		pcf = 1
 	}

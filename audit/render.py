@@ -133,7 +133,7 @@ def load(d):
     D["equiv"] = {}
     for line in open(os.path.join(d, "equiv.txt"), encoding="utf-8") if os.path.exists(os.path.join(d, "equiv.txt")) else []:
         fx, impl, what, verdict = line.rstrip("\n").split("\t")
-        D["equiv"].setdefault(fx, {}).setdefault(impl, {})[what] = verdict == "ok"
+        D["equiv"].setdefault(fx, {}).setdefault(impl, {})[what] = verdict  # ok, near or bad
     D["examples"] = D["env"].get("examples", "").split()
     D["callgrind"], D["massif"], D["memcheck"] = {}, {}, {}
     for impl in IMPLS:
@@ -333,13 +333,13 @@ def cli(D):
     rows = [["network", "nodes", "links", "identical", "C", "Odin", "Odin −bc", "Odin/C", "peak RSS C", "Odin"]]
     for r in bench_rows(D):
         eq = D["equiv"].get(r["fixture"], {})
-        same = all(all(v.values()) for v in eq.values()) if eq else None
+        same = all(v2 != "bad" for v in eq.values() for v2 in v.values()) if eq else None
         per = r["per"]
         c = per.get("c", {}).get("med", {}).get("total")
         o = per.get("odin", {}).get("med", {}).get("total")
         nb = per.get("odin-nbc", {}).get("med", {}).get("total")
         rows.append([r["fixture"], n(r.get("nodes", 0)), n(r.get("links", 0)),
-                     "✓" if same else ("✗" if same is False else "·"),
+                     ("✓" if all(v2 == "ok" for v in eq.values() for v2 in v.values()) else "≈") if same else ("✗" if same is False else "·"),
                      ms(c) if c else "—", ms(o) if o else "—", ms(nb) if nb else "—", ratio(o, c) if c and o else "—",
                      kb(per.get("c", {}).get("maxrss", 0) * 1024) if "c" in per else "—",
                      kb(per.get("odin", {}).get("maxrss", 0) * 1024) if "odin" in per else "—"])
@@ -614,21 +614,23 @@ def page(D):
     # ── 2 examples ──
     w('<h2 id="examples">2 · Examples</h2>')
     w('<p>EPANET’s own example networks and a generated 40×40 grid, each through the whole pipeline — open, hydraulics, quality, report, close — '
-      'on all three builds. <em>Identical</em> means the driver’s print of every node and link value at every step (<code>%%.17g</code>), the report, '
-      'the binary output file and the hydraulics file are byte for byte the same as EPANET’s. Times are the median of %s reps.</p>' % esc(env.get("reps", "?")))
+      'on all three builds. ✓ means the driver’s print of every node and link value at every step (<code>%%.17g</code>), the report, '
+      'the binary output file and the hydraulics file are byte for byte the same as EPANET’s; ≈ means every number is within 1e-9 of EPANET’s '
+      '(a last bit, where a constant product is now computed plainly). Times are the median of %s reps.</p>' % esc(env.get("reps", "?")))
     w(legend())
     w('<table><tr><th>network</th><th class="num">nodes</th><th class="num">links</th><th>run</th><th>quality</th><th>identical</th>'
       '<th class="num">C</th><th class="num">Odin</th><th class="num">Odin −bc</th><th class="num">Odin/C</th><th></th></tr>')
     brows = bench_rows(D)
     for r in brows:
         eq = D["equiv"].get(r["fixture"], {})
-        same = all(all(v.values()) for v in eq.values()) if eq else None
+        same = all(v2 != "bad" for v in eq.values() for v2 in v.values()) if eq else None
+        exact = same and all(v2 == "ok" for v in eq.values() for v2 in v.values())
         per = r["per"]
         vals = [per.get(i, {}).get("med", {}).get("total") for i in IMPLS]
         w("<tr>%s%s%s%s%s%s%s%s%s%s%s</tr>" % (
             td(esc(r["fixture"]), "name"), td(n(r.get("nodes", 0)), "num"), td(n(r.get("links", 0)), "num"),
             td("%s h, %s min steps" % (r.get("duration", 0) // 3600, r.get("hstep", 0) // 60) if r.get("duration") else "steady state"),
-            td(esc(r.get("quality", "?"))), td(tick(same) if same is not None else "·"),
+            td(esc(r.get("quality", "?"))), td((tick(True) if exact else '<span class="ok">≈</span>') if same else (tick(False) if same is False else "·")),
             *(td(ms(v) if v else "—", "num") for v in vals), td(ratio(vals[1], vals[0]) if vals[0] and vals[1] else "—", "num"), td(bars(vals))))
     w("</table>")
     for r in brows:
@@ -636,8 +638,8 @@ def page(D):
             continue
         w("<h3>%s</h3>" % esc(r["fixture"]))
         eq = D["equiv"].get(r["fixture"], {})
-        w('<p class="note">identical to EPANET: %s</p>' % " · ".join(
-            "%s %s" % (esc(SHORT[impl]), " ".join("%s %s" % (tick(v), esc({"txt": "results", "rpt": "report", "out": ".out", "hyd": ".hyd"}[k])) for k, v in eq[impl].items()))
+        w('<p class="note">against EPANET (✓ identical, ≈ within 1e-9): %s</p>' % " · ".join(
+            "%s %s" % (esc(SHORT[impl]), " ".join("%s %s" % (tick(True) if v == "ok" else ('<span class="ok">≈</span>' if v == "near" else tick(False)), esc({"txt": "results", "rpt": "report", "out": ".out", "hyd": ".hyd"}[k])) for k, v in eq[impl].items()))
             for impl in ("odin", "odin-nbc") if impl in eq) if eq else "not checked")
         w('<div class="two"><div>')
         w('<table><tr><th>phase</th><th class="num">C</th><th class="num">Odin</th><th class="num">Odin −bc</th><th></th></tr>')

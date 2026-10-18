@@ -1071,10 +1071,17 @@ newpremise :: proc(ps: ^Parser, logop: Rule_Logic) -> int {
 	} else if sv := findmatch(ps.tok[ps.ntok - 1], RULE_VALUES[:]); sv > int(Rule_Status.IS_NUMBER) {
 		s = Rule_Status(sv)
 	} else {
-		y, ok := getfloat(ps.tok[ps.ntok - 1])
-		if !ok do return 202
-		x = y
-		if v == .FILLTIME || v == .DRAINTIME do x *= 3600
+		tok := ps.tok[ps.ntok - 1]
+		if (v == .FILLTIME || v == .DRAINTIME) && strings.index_byte(tok, ':') >= 0 {
+			// h:m:s, as EPANET's own .inp writer puts it (and its own parser refuses)
+			x = hour(tok, "") * 3600
+			if x < 0 do return 202
+		} else {
+			y, ok := getfloat(tok)
+			if !ok do return 202
+			x = y
+			if v == .FILLTIME || v == .DRAINTIME do x *= 3600
+		}
 	}
 	append(&ps.premise_logop, logop)
 	append(&ps.premise_object, Rule_Object(obj))

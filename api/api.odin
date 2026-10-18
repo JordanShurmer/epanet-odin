@@ -54,9 +54,16 @@ cpath :: proc "contextless" (buf: ^[1024]u8, s: string) -> cstring {
 	return cstring(raw_data(buf[:]))
 }
 
-// tmp_name: an unused file name beginning "en", like EPANET's, or "".
+// tmp_name: an unused file name beginning "en" in the temporary directory
+// ($TMPDIR, else /tmp), or "". (EPANET makes its scratch files in the
+// working directory, where a crash leaves them lying about.)
 tmp_name :: proc(p: ^Project) -> string {
-	buf: [9]u8 = "enXXXXXX\x00"
+	dir := string(libc.getenv("TMPDIR"))
+	if len(dir) == 0 do dir = "/tmp"
+	buf: [1024]u8
+	n := min(len(dir), 1000)
+	copy(buf[:n], dir[:n])
+	copy(buf[n:], "/enXXXXXX\x00")
 	fd := posix.mkstemp(cstring(&buf[0]))
 	if fd < 0 do return ""
 	posix.close(fd)

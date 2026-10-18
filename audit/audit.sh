@@ -23,6 +23,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 . harness/out.sh
+. harness/same.sh
 
 QUICK=
 for a in "$@"; do
@@ -42,6 +43,7 @@ LLVM_COV=${LLVM_COV:-llvm-cov}
 LLVM_PROFDATA=${LLVM_PROFDATA:-llvm-profdata}
 A=build/audit
 IMPLS="c odin odin-nbc"
+WDIFF=$A/wdiff
 
 command -v "$ODIN" >/dev/null || usage "odin compiler not found (ODIN=$ODIN); see README.md"
 command -v python3 >/dev/null || usage "python3 not found (loc.py and render.py need it)"
@@ -127,6 +129,7 @@ timed odin_engine "$ODIN" build epanet -build-mode:static -no-entry-point -o:spe
     -out:"$A/libepanet-odin.a" || bad "build odin engine"
 timed odin_dumpnet "$ODIN" build cmd/dumpnet -o:speed -out:"$A/dumpnet-odin" || bad "build dumpnet-odin"
 run "$CC" -O2 -w -I"$EP/include" -I"$EP/src" harness/dumpnet.c "$A/c/libepanet2.a" -lm -o "$A/dumpnet-c" || bad "link dumpnet-c"
+run "$CC" -O2 -w harness/wdiff.c -lm -o "$A/wdiff" || bad "compile wdiff.c"
 for impl in $IMPLS; do
     run "$CC" -O2 -w -I"$EP/include" audit/bench.c "$(lib $impl)" -lm -o "$A/bench-$impl" || bad "link bench-$impl"
     run "$CC" -O2 -w -I"$EP/include" harness/run.c "$(lib $impl)" -lm -o "$A/run-$impl" || bad "link run-$impl"
@@ -157,30 +160,36 @@ for fx in $EXAMPLES; do
 done
 
 # ── 5 equivalence: every value at %.17g, the report, the .out and .hyd files ──
+# A verdict is `ok` (byte for byte), `near` (within TOL, 1e-9 relative) or `bad`.
 undated() { sed -e '1s/^\(  Page 1 *\).*$/\1DATE/' -e 's/^\(  Analysis \(begun\|ended\) \).*$/\1DATE/' "$1"; }
 : >"$A/equiv.txt"
 for fx in $EXAMPLES; do
     inp=$(inp_of "$fx") || continue
     for impl in $IMPLS; do
         "$A/run-$impl" "$inp" - "$A/eq.$fx.$impl" >"$A/eq.$fx.$impl.txt" 2>&1
+        undated "$A/eq.$fx.$impl.rpt" >"$A/eq.$fx.$impl.rpt.undated"
     done
-    same=1
+    worst=ok
     for impl in odin odin-nbc; do
-        for what in txt rpt out hyd; do
-            if [ $what = rpt ]; then
-                cmp -s <(undated "$A/eq.$fx.c.rpt") <(undated "$A/eq.$fx.$impl.rpt") && verdict=ok || verdict=bad
+        for what in txt rpt.undated out hyd; do
+            a="$A/eq.$fx.c.$what"; b="$A/eq.$fx.$impl.$what"
+            if cmp -s "$a" "$b"; then
+                verdict=ok
+            elif case $what in out|hyd) same_bin "$a" "$b" >/dev/null ;; *) same "$a" "$b" >/dev/null ;; esac; then
+                verdict=near
             else
-                cmp -s "$A/eq.$fx.c.$what" "$A/eq.$fx.$impl.$what" && verdict=ok || verdict=bad
+                verdict=bad
             fi
-            [ $verdict = ok ] || same=0
-            printf '%s\t%s\t%s\t%s\n' "$fx" "$impl" "$what" "$verdict" >>"$A/equiv.txt"
+            [ $verdict = bad ] && worst=bad
+            [ $verdict = near ] && [ $worst = ok ] && worst=near
+            printf '%s\t%s\t%s\t%s\n' "$fx" "$impl" "${what%.undated}" "$verdict" >>"$A/equiv.txt"
         done
     done
-    if [ $same = 1 ]; then
-        ok "$fx: results, report, .out and .hyd identical on all three"
-    else
-        bad "$fx differs" "$(grep "^$fx" "$A/equiv.txt" | grep bad | head -3)"
-    fi
+    case $worst in
+    ok) ok "$fx: results, report, .out and .hyd identical on all three" ;;
+    near) ok "$fx: results, report, .out and .hyd within $TOL on all three" ;;
+    *) bad "$fx differs" "$(grep "^$fx" "$A/equiv.txt" | grep bad | head -3)" ;;
+    esac
 done
 
 # ── 6 valgrind: instructions and cache (callgrind), heap (massif), errors (memcheck) ──

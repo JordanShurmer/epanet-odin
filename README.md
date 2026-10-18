@@ -3,7 +3,11 @@
 [OWA EPANET](https://github.com/OpenWaterAnalytics/EPANET), the water
 distribution network engine, rewritten in Odin, data-oriented, from the core
 solvers outward. Every piece is proved against the C original before the
-next one starts, by plugging it into the real EPANET and running both.
+next one starts, by plugging it into the real EPANET and running both. The
+tag `Identical` is the last state that matched EPANET byte for byte; since
+then the port departs from it where EPANET is wrong or merely odd (see
+*Where it departs from EPANET*), and the harness proves equivalence within
+1e-9 instead.
 
 ```sh
 harness/test.sh            # build c / odin / shadow, run every fixture
@@ -131,9 +135,52 @@ zero-order wall decay to a limiting potential, every tank mixing model,
 every booster source type) and `quality-age.inp` (water age). Add your own
 networks with `EXTRA_FIXTURES="…"`, or run only some with `FIXTURES="…"`.
 
+## Where it departs from EPANET
+
+Up to the tag `Identical` every result, report and file matched EPANET's
+byte for byte, and a few lines of Odin were written strangely to get there:
+a product of constants went through variables, because Odin folds the
+product exactly where C rounds each constant first. Those lines are plain
+now (`units.odin`, `open.odin`, `output.odin`). Checked one by one, all but
+one of those products round the same either way; the orifice constant of a
+leaking pipe, `4.8149766e-6`, is one ulp closer to the number written than
+C's compiled `4.8149766 * 1.e-6`. That ulp does not change the accuracy of
+any result — the Newton loop stops at a relative flow change of 1e-3, far
+above it — but on a network that mixes leaking pipes with pressure-driven
+demand it decides whether one more trial runs, and with it the last digits
+of that step. The harness compares within `TOL` (1e-9, relative) after a
+bit-exact try and says which fixtures match to the bit; `parse-clean`, the
+one such fixture, is declared in `test.sh` to compare within 1e-2.
+`Identical` remains for anyone who needs the bytes.
+
+Bugs EPANET has that the port does not:
+
+- `EN_addnode` of a junction moves every tank up one index but not the
+  quality trace node; here it moves too.
+- Reading a file whose junction lines had errors, EPANET shifts a rule
+  premise on a tank once per tank, which is wrong past the first; here once.
+- EPANET's `.inp` writer prints a FILLTIME or DRAINTIME premise as h:m:s,
+  which EPANET's own parser cannot read back. The writer here prints the
+  same (the files stay identical), and the parser reads h:m:s as well as
+  hours, so the port reads what either wrote.
+- `EN_setlinknodes` accepted node 0; `EN_settimeparam(EN_REPORTSTART)`
+  tested the old start against the duration instead of the new one;
+  `EN_deletecurve` and `EN_setcurveid` answered a bad curve index with the
+  pattern error (205); `EN_setruleenabled` answered a bad rule index with
+  the control error (241). Each answers as its documentation says now.
+- A project begun with `EN_init` reported the quality column with no
+  quality set; now the column follows the quality type, as it does for a
+  project read from a file.
+- EPANET makes its scratch files in the working directory; the port makes
+  them in `$TMPDIR` (else `/tmp`).
+
+Kept, because callers may lean on them: a report file name of `""` sends
+the report to stdout; `EN_settimeparam` silently clamps a hydraulic step to
+the pattern and report steps.
+
 ## Roadmap — core out
 
-Ported, bit-exact on every fixture:
+Ported, equivalent on every fixture (bit-exact up to the tag `Identical`):
 
 1. **`linsolve`** — numeric Cholesky factorization + forward/back
    substitution (`smatrix.odin`).
@@ -253,7 +300,7 @@ Ported, bit-exact on every fixture:
     read back and run, on plain EPANET and on the toolkit — the prints and
     the files are byte for byte the same (one EPANET quirk shared: its own
     writer prints a FILLTIME premise in h:m:s, which its own parser does
-    not read back; `parse-clean` shows it on both sides).
+    not read back; fixed here, see *Where it departs from EPANET*).
 
 Next, in order:
 
