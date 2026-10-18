@@ -4,8 +4,9 @@
 #   https://jordanshurmer.github.io/epanet-odin/
 #
 # Pages has to be switched on once, under Settings → Pages → Source: GitHub
-# Actions; the configure-pages step tries to do that itself, and the artifact
-# is there either way.
+# Actions (https://github.com/JordanShurmer/epanet-odin/settings/pages). Until
+# then the deploy step fails without failing the run, and the page is the
+# run's `audit` artifact.
 name: audit
 on:
   push:
@@ -61,3 +62,4 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+        continue-on-error: true   # a 404 here means Pages is not enabled yet
