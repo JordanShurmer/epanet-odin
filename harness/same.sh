@@ -6,14 +6,13 @@
 #                       that is not. (cmp first: bit-exact is the common case.)
 #   same_bin A B        binary files: wdiff, every float32 within TOL.
 #
-# TOL is the caller's (default 1e-9); FTOL, when set, is the fixture's own.
-# WDIFF names the wdiff binary.
+# TOL is the caller's (default 1e-9). WDIFF names the wdiff binary.
 
 TOL=${TOL:-1e-9}
 WDIFF=${WDIFF:-build/wdiff}
 
 same() {
-    paste -d'|' "$1" "$2" | awk -F'|' -v tol="${FTOL:-$TOL}" '
+    paste -d'|' "$1" "$2" | awk -F'|' -v tol="$TOL" '
         { n = split($1, a, " "); m = split($2, b, " ")
           if (n != m) { print "line " NR ": " $1 " | " $2; exit 1 }
           for (i = 1; i <= n; i++) {
@@ -27,5 +26,5 @@ same() {
 }
 
 same_bin() {
-    "$WDIFF" "$1" "$2" "${FTOL:-$TOL}"
+    "$WDIFF" "$1" "$2" "$TOL"
 }

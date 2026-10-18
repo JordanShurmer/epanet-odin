@@ -154,17 +154,19 @@ run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin
 ok "build c odin shadow pure dumpnet rebuild"
 
 # ── compare ─────────────────────────────────────────────────────────────
-# (same / same_bin from harness/same.sh: cmp first, then within the tolerance)
+# (same / same_bin from harness/same.sh: cmp first, then within TOL)
+export SHADOW_TOL=$TOL
 
-# tol_of FIXTURE — what a fixture compares within. parse-clean mixes leaking
-# pipes with pressure-driven demand; with the exact orifice constant (EPANET's
-# compiler leaves it one ulp off) its Newton loop stops a trial apart from
-# EPANET's at some steps, and the last digits of that step with it. Every
-# other fixture holds to TOL.
-tol_of() {
+# fixture_kind FIXTURE — `run`: results, files, shadow and the rebuild are
+# all compared; `parse`: only its reading and what is written back.
+# parse-clean puts every valve kind and three pumps in one loop so that
+# every section and keyword gets read; it has no stable hydraulic solution
+# (EPANET calls it unbalanced at most steps), so one ulp anywhere decides
+# the sign of a flow, and comparing its results would prove nothing.
+fixture_kind() {
     case $1 in
-    parse-clean) echo 1e-2 ;;
-    *) echo "$TOL" ;;
+    parse-clean) echo parse ;;
+    *) echo run ;;
     esac
 }
 
@@ -178,7 +180,7 @@ check_files() {
     if cmp -s "$B/$fx.c.rpt.undated" "$B/$fx.$build.rpt.undated"; then
         ok "$fx $build report identical ($(wc -l <"$B/$fx.c.rpt") lines)"
     elif diff=$(same "$B/$fx.c.rpt.undated" "$B/$fx.$build.rpt.undated"); then
-        ok "$fx $build report within $FTOL"
+        ok "$fx $build report within $TOL"
     else
         bad "$fx $build report" "$diff" "diff $B/$fx.c.rpt $B/$fx.$build.rpt"
     fi
@@ -188,7 +190,7 @@ check_files() {
         elif diff=$(same_bin "$B/$fx.c.$ext" "$B/$fx.$build.$ext"); then
             ok "$fx $build .$ext $diff"
         else
-            bad "$fx $build .$ext" "$diff" "$WDIFF $B/$fx.c.$ext $B/$fx.$build.$ext $FTOL"
+            bad "$fx $build .$ext" "$diff" "$WDIFF $B/$fx.c.$ext $B/$fx.$build.$ext $TOL"
         fi
     done
 }
@@ -212,7 +214,7 @@ check() {
     elif cmp -s "$B/$fx.c.txt" "$B/$fx.odin.txt"; then
         ok "$fx results bit-exact ($(wc -l <"$B/$fx.c.txt") lines)"
     elif diff=$(same "$B/$fx.c.txt" "$B/$fx.odin.txt"); then
-        ok "$fx results within $FTOL"
+        ok "$fx results within $TOL"
         note "  $fx is not bit-exact: $(diff "$B/$fx.c.txt" "$B/$fx.odin.txt" | grep -c '^<') lines differ"
     else
         bad "$fx results" "$diff" "diff $B/$fx.c.txt $B/$fx.odin.txt"
@@ -234,7 +236,7 @@ check() {
         if cmp -s "$B/$fx.c.txt" "$B/$fx.pure.txt"; then
             ok "$fx pure results bit-exact"
         elif diff=$(same "$B/$fx.c.txt" "$B/$fx.pure.txt"); then
-            ok "$fx pure results within $FTOL"
+            ok "$fx pure results within $TOL"
         else
             bad "$fx pure results" "$diff" "diff $B/$fx.c.txt $B/$fx.pure.txt"
         fi
@@ -243,7 +245,7 @@ check() {
         ok "$fx pure fails as EPANET does"
     fi
 
-    SHADOW_TOL=$FTOL "$B/run-shadow" "$inp" "${mode:--}" >/dev/null 2>"$B/$fx.shadow.err"
+    "$B/run-shadow" "$inp" "${mode:--}" >/dev/null 2>"$B/$fx.shadow.err"
     [ "$DEBUG" -ge 2 ] && sed 's/^/    /' "$B/$fx.shadow.err" >&2
     for sym in $SWAP; do
         line=$(grep "^shadow $sym: [0-9]* calls" "$B/$fx.shadow.err")
@@ -271,12 +273,14 @@ check_parse() {
     fi
 }
 
-# check_rebuild FIXTURE — the editing API: read the network, build it again
-# through EN_init and the setters on each side, run and print, write both
-# projects as .inp, read the rebuilt one back and run that too.
+# check_rebuild FIXTURE [files] — the editing API: read the network, build
+# it again through EN_init and the setters on each side, run and print,
+# write both projects as .inp, read the rebuilt one back and run that too.
+# With `files`, only the two .inp files are judged.
 check_rebuild() {
     inp=$1
     fx=$(basename "$inp" .inp)
+    files_only=${2:-}
     "$B/rebuild-c" "$inp" "$B/$fx.rb.c" >"$B/$fx.rb.c.txt" 2>"$B/$fx.rb.c.err"
     rc_c=$?
     "$B/rebuild-pure" "$inp" "$B/$fx.rb.pure" >"$B/$fx.rb.pure.txt" 2>"$B/$fx.rb.pure.err"
@@ -293,12 +297,14 @@ check_rebuild() {
         bad "$fx rebuild" "exit c=$rc_c pure=$rc_p" "$(head -1 "$B/$fx.rb.pure.err")"
         return
     fi
-    if [ $rc_c -ne 0 ]; then
+    if [ -n "$files_only" ]; then
+        :
+    elif [ $rc_c -ne 0 ]; then
         skip "$fx rebuild ($(grep -m1 'EPANET error' "$B/$fx.rb.c.err" | sed 's/.*rebuild: //'))"
     elif cmp -s "$B/$fx.rb.c.txt" "$B/$fx.rb.pure.txt"; then
         ok "$fx rebuild results bit-exact ($(wc -l <"$B/$fx.rb.c.txt") lines)"
     elif diff=$(same "$B/$fx.rb.c.txt" "$B/$fx.rb.pure.txt"); then
-        ok "$fx rebuild results within $FTOL"
+        ok "$fx rebuild results within $TOL"
     else
         bad "$fx rebuild results" "$diff" "diff $B/$fx.rb.c.txt $B/$fx.rb.pure.txt"
     fi
@@ -307,7 +313,7 @@ check_rebuild() {
         if cmp -s "$B/$fx.rb.c.$what.inp" "$B/$fx.rb.pure.$what.inp"; then
             ok "$fx $what .inp identical ($(wc -l <"$B/$fx.rb.c.$what.inp") lines)"
         elif diff=$(same "$B/$fx.rb.c.$what.inp" "$B/$fx.rb.pure.$what.inp"); then
-            ok "$fx $what .inp within $FTOL"
+            ok "$fx $what .inp within $TOL"
         else
             bad "$fx $what .inp" "$diff" "diff $B/$fx.rb.c.$what.inp $B/$fx.rb.pure.$what.inp"
         fi
@@ -315,11 +321,15 @@ check_rebuild() {
 }
 
 for inp in $FIXTURES; do
-    FTOL=$(tol_of "$(basename "$inp" .inp)")
     check_parse "$inp"
-    check "$inp" ""
-    check "$inp" stepq
-    check_rebuild "$inp"
+    if [ "$(fixture_kind "$(basename "$inp" .inp)")" = parse ]; then
+        skip "$(basename "$inp" .inp) hydraulics (no stable solution: read and written back only)"
+        check_rebuild "$inp" files
+    else
+        check "$inp" ""
+        check "$inp" stepq
+        check_rebuild "$inp"
+    fi
 done
 
 

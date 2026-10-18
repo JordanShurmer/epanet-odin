@@ -147,11 +147,14 @@ leaking pipe, `4.8149766e-6`, is one ulp closer to the number written than
 C's compiled `4.8149766 * 1.e-6`. That ulp does not change the accuracy of
 any result — the Newton loop stops at a relative flow change of 1e-3, far
 above it — but on a network that mixes leaking pipes with pressure-driven
-demand it decides whether one more trial runs, and with it the last digits
-of that step. The harness compares within `TOL` (1e-9, relative) after a
-bit-exact try and says which fixtures match to the bit; `parse-clean`, the
-one such fixture, is declared in `test.sh` to compare within 1e-2.
-`Identical` remains for anyone who needs the bytes.
+demand it can decide whether one more trial runs. The harness compares
+within `TOL` (1e-9, relative) after a bit-exact try and says which fixtures
+match to the bit. One fixture is no longer run at all: `parse-clean`, which
+puts every valve kind and three pumps in one loop so that every section is
+read, has no stable hydraulic solution (EPANET calls it unbalanced at most
+steps), so one ulp anywhere flips the sign of a flow; it is compared as
+read and as written back, which is what it is for. `Identical` remains for
+anyone who needs the bytes.
 
 Bugs EPANET has that the port does not:
 
