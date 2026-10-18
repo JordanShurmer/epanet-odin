@@ -275,7 +275,7 @@ def coverage_rows(D):
     rows = []
     for f in cov["files"]:
         name = os.path.basename(f["filename"])
-        if not name.endswith(".c"):
+        if not name.endswith(".c") or "/src/" not in f["filename"].replace(os.sep, "/"):
             continue
         s = f["summary"]
         rows.append({"file": name, "lines": s["lines"], "functions": s["functions"], "branches": s.get("branches")})
@@ -457,7 +457,7 @@ details { margin: 0.5lh 0 1lh; } summary { cursor: pointer; color: var(--ink-2);
 pre { font: inherit; font-size: 0.85rem; background: var(--wash); padding: 0.5lh 2ch; overflow-x: auto; margin: 0 0 1lh; }
 code { font: inherit; background: var(--wash); padding: 0 0.4ch; }
 .note { color: var(--ink-2); font-size: 0.9rem; }
-footer { margin-top: 4lh; padding-top: 1lh; border-top: 1px solid var(--rule-strong); color: var(--ink-2); font-size: 0.85rem; }
+footer { margin-top: 0; color: var(--ink-2); font-size: 0.85rem; }
 footer dl { display: grid; grid-template-columns: max-content 1fr; gap: 0 3ch; margin: 0.5lh 0; }
 footer dt { color: var(--ink-2); } footer dd { margin: 0; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 4ch; } @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
@@ -682,7 +682,7 @@ def page(D):
                 data = s.get("Dr", 0) + s.get("Dw", 0)
                 br = s.get("Bc", 0) + s.get("Bi", 0)
                 w("<tr>%s%s%s%s%s%s%s%s%s%s</tr>" % (
-                    td(esc(fx) if k == 0 else "", "name"), td(esc(SHORT[impl])), td(n(s.get("Ir", 0)), "num"), td(ratio(s.get("Ir", 0), base) if base else "—", "num"),
+                    td(esc(fx) if k == 0 else "", "name"), td(esc(SHORT[impl]), "name"), td(n(s.get("Ir", 0)), "num"), td(ratio(s.get("Ir", 0), base) if base else "—", "num"),
                     td(n(data), "num"), td(pct(s.get("D1mr", 0) + s.get("D1mw", 0), data) if "D1mr" in s else "—", "num"),
                     td(pct(s.get("DLmr", 0) + s.get("DLmw", 0), data) if "DLmr" in s else "—", "num"),
                     td(n(br) if br else "—", "num"), td(pct(s.get("Bcm", 0) + s.get("Bim", 0), br) if br else "—", "num"),
@@ -693,8 +693,9 @@ def page(D):
             if not pairs:
                 continue
             w("<h3>Hot paths on %s</h3>" % esc(fx))
-            w('<p class="note">Self instructions per function — the function’s own work, callees not included — for every C function at or above 0.5%% of the run, '
-              'with the Odin function of the same name beside it, then what only the Odin side spends 0.5%% on. <code>???</code> is a function without a file in the symbol table, which is most of them.</p>')
+            w('<p class="note">Self instructions per function — the function’s own work, callees not included — for every C function at or above 0.5% of the run, '
+              'with the Odin function of the same name beside it, then what only the Odin side spends 0.5% on. A C function with no twin was either inlined into its Odin caller '
+              '(<code>genmmd</code> into <code>create_sparse</code>, <code>reactpipes</code> into <code>transport</code>) or has no counterpart (the allocator and the hash table: the port keeps an arena).</p>')
             w('<table><tr><th>C function</th><th class="num">Ir</th><th>Odin function</th><th class="num">Ir</th><th class="num">Odin −bc</th><th class="num">Odin/C</th><th></th></tr>')
             for p in pairs:
                 w("<tr>%s%s%s%s%s%s%s</tr>" % (
@@ -725,7 +726,7 @@ def page(D):
                     if not m:
                         continue
                     w("<tr>%s%s%s%s%s%s%s%s%s%s</tr>" % (
-                        td(esc(fx) if k == 0 else "", "name"), td(esc(SHORT[impl])),
+                        td(esc(fx) if k == 0 else "", "name"), td(esc(SHORT[impl]), "name"),
                         td(('<span class="ok">0</span>' if m["errors"] == 0 else '<span class="bad">%s</span>' % n(m["errors"])) if m["errors"] is not None else "—", "num"),
                         td(n(m["suppressed"]), "num"), td(kb(m["definitely"]) if m["definitely"] else "0", "num"), td(kb(m["possibly"]) if m["possibly"] else "0", "num"),
                         td(n(m["allocs"]), "num"), td(n(m["frees"]), "num"), td(kb(m["bytes"]), "num"),
