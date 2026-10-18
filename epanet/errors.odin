@@ -143,3 +143,94 @@ error_message :: proc "contextless" (code: int) -> string {
 	}
 	return ""
 }
+
+// Error is EPANET's error code as a value: `err != nil` is the test, the
+// number is EPANET's, so a code read from a report, the toolkit or a C
+// program means the same thing. error_text gives the message.
+Error :: enum i32 {
+	None                   = 0,
+	Out_Of_Memory          = 101,
+	No_Network             = 102,
+	Hydraulics_Not_Open    = 103,
+	No_Hydraulics          = 104,
+	Quality_Not_Open       = 105,
+	No_Results             = 106,
+	External_Hydraulics    = 107,
+	Hydraulics_Active      = 108,
+	Unsolvable             = 110,
+	Quality_Unsolvable     = 120,
+	Input_Errors           = 200,
+	Syntax                 = 201,
+	Bad_Number             = 202,
+	Undefined_Node         = 203,
+	Undefined_Link         = 204,
+	Undefined_Pattern      = 205,
+	Undefined_Curve        = 206,
+	Control_On_CV          = 207,
+	Bad_PDA_Limits         = 208,
+	Bad_Node_Value         = 209,
+	Bad_Link_Value         = 211,
+	Undefined_Trace_Node   = 212,
+	Bad_Option             = 213,
+	Line_Too_Long          = 214,
+	Duplicate_ID           = 215,
+	Undefined_Pump         = 216,
+	Bad_Energy_Data        = 217,
+	Valve_On_Tank          = 219,
+	Valve_On_Valve         = 220,
+	Misplaced_Rule_Clause  = 221,
+	Same_Ends              = 222,
+	Too_Few_Nodes          = 223,
+	No_Tanks               = 224,
+	Bad_Tank_Levels        = 225,
+	No_Pump_Curve          = 226,
+	Bad_Pump_Curve         = 227,
+	Bad_Curve_X            = 230,
+	Empty_Curve            = 231,
+	Empty_Pattern          = 232,
+	Unconnected_Nodes      = 233,
+	Unconnected_Node       = 234,
+	No_Source              = 240,
+	No_Control             = 241,
+	Bad_Format             = 250,
+	Bad_Parameter          = 251,
+	Bad_ID                 = 252,
+	No_Demand              = 253,
+	No_Coordinates         = 254,
+	Bad_Vertex             = 255,
+	No_Rule                = 257,
+	No_Rule_Clause         = 258,
+	Node_Has_Links         = 259,
+	Node_Is_Trace          = 260,
+	In_Control             = 261,
+	Solver_Active          = 262,
+	Not_A_Tank             = 263,
+	Not_A_Valve            = 264,
+	Bad_Section            = 299,
+	Same_File_Names        = 301,
+	Cannot_Open_Input      = 302,
+	Cannot_Open_Report     = 303,
+	Cannot_Open_Output     = 304,
+	Cannot_Open_Hydraulics = 305,
+	Hydraulics_Mismatch    = 306,
+	Cannot_Read_Hydraulics = 307,
+	Cannot_Save_Results    = 308,
+	Cannot_Save_Report     = 309,
+}
+
+error_text :: proc "contextless" (err: Error) -> string {
+	return error_message(int(err))
+}
+
+// Warning is what a solve reports short of an error: EPANET's codes 1 to
+// 6, and one EPANET never gives because it refuses instead.
+Warning :: enum i32 {
+	None              = 0,
+	Unbalanced        = 1, // the system did not balance in the trials allowed
+	Unstable          = 2, // it balanced only after the trials ran out
+	Disconnected      = 3, // a part of the network has no path to a source
+	Pumps             = 4, // a pump cannot deliver its head or flow
+	Valves            = 5, // a valve cannot hold its setting
+	Negative_Pressure = 6,
+	Nothing_To_Solve  = 7, // no node a tank or reservoir reaches: the step moved the clock only
+}

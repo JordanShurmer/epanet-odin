@@ -4,7 +4,11 @@ A second face for the engine, beside the toolkit (`api/`, EPANET's `EN_*`
 for C programs). This one is for Odin programs and for anything that can
 call Odin, a game in WebAssembly included: columns in, columns out, one
 proc per step of the job, errors as values. It is what the `epanet`
-package exports; the `EN_*` library keeps working over the same engine.
+package exports (`model.odin`, `sim.odin`, `simulate.odin`); the `EN_*`
+library keeps working over the same engine. Built as designed, with two
+departures noted where they fall: the engine's `Project` stays inside the
+`Sim` as its own, and a copy rebuilds its engine rather than cloning the
+solver's state.
 
 Rung numbers are the [ponytail](https://github.com/DietrichGebert/ponytail)
 ladder (bywater-mill's `PONYTAIL.md`): where a choice stopped.
@@ -61,13 +65,16 @@ edits by hand is rows, so `Model` is rows. The engine runs over columns
 and a game keeps columns, so `Sim` is columns; `sim_from_model` is the one
 place the two meet.
 
-There is no Project. EPANET's `Project` is the toolkit's handle: the
-network, the run state, the open files, the report's line count and the
-parser's flags in one struct, because a C API needs one pointer. Inside
-the package today's `Project` splits the same way: the engine's part
-becomes `Sim`; the files, the report state and the `EN_*` semantics move
-to `api/`, whose handle is a `Sim` plus those. The report writers take a
-`Sim` and a `^Report` that is nil when no one asked for a report.
+There is no Project in the API. EPANET's `Project` is the toolkit's
+handle: the network, the run state, the open files, the report's line
+count and the parser's flags in one struct, because a C API needs one
+pointer. The design had the engine's part become `Sim` and the rest move
+to `api/`; what was built keeps the `Project` whole, inside the `Sim` as
+the engine it owns and rebuilds on rewire (from an effective `Model`,
+through the same builder the reader's tail runs), with its file and
+report state simply unused. That was the first rung that held: the
+toolkit, the harness and the step all run the one engine, and nothing
+had to move.
 
 ## Sim
 
@@ -75,18 +82,21 @@ to `api/`, whose handle is a `Sim` plus those. The report writers take a
 
 ```odin
 Sim :: struct {
-	nodes: Nodes,         // written by the caller; read by every step
-	links: Links,
-	chemicals: []Chemical,
-	options: Sim_Options,
-	t: i32,               // the clock, seconds
-	rewire: bool,         // set when the structure changed: a node or link added or removed, a kind or an end changed
-	out: Node_Out,        // written by the step; the caller's units, the caller's indexes
-	link_out: Link_Out,
-	warn: Warning,        // the last step's
-	fault: int,           // the node or link an error was about, or -1
-	// the engine's own: the network in internal units with junctions first, the solver
-	// state, the matrix, the map from the caller's indexes to its own. Readable; not for writing.
+	nodes:     Nodes,         // written by the caller; read by every step
+	links:     Links,
+	chemicals: []Chemical,    // read on rewire
+	options:   Sim_Options,
+	t:         i32,           // the clock, seconds
+	rewire:    bool,          // set when the structure changed: a row added or removed, a kind or an end changed by hand
+	out:       Node_Out,      // written by the step; the caller's units, the caller's indexes
+	link_out:  Link_Out,
+	warn:      Warning,       // the last step's
+	fault:     int,           // the node or link an error was about, or -1
+	at_report: bool,          // the last step's results fell on one of the model's reporting times
+	balance:   []Mass_Balance, // per chemical
+	// the engine's own: the Model this came from (nil when bare), which entity
+	// each row came from, the engine's 1-based index per row (0 = left out),
+	// the project and the per-chemical solver states. Readable; not for writing.
 	…
 }
 
@@ -95,7 +105,7 @@ Nodes :: struct {
 	count:     int,
 	kind:      []Node_Kind,
 	elevation: []f64,
-	demand:    []f64,   // a junction's base demand; the caller changes it whenever it likes
+	demand:    []f64,   // a junction's base demand (a model junction's first category; the others ride inside)
 	emitter:   []f64,   // a leak's coefficient, 0 = none
 	head:      []f64,   // a reservoir's
 	level, min_level, max_level, diameter, min_volume: []f64, // a tank's; level is the engine's as time passes, and the caller's to set
@@ -110,96 +120,119 @@ Links :: struct {
 	setting:   []f64,      // a valve's setting, a pump's speed (1)
 	length, diameter, roughness, minor_loss: []f64, // a pipe's; diameter a valve's too
 	check_valve: []bool,   // a pipe's
-	pump_q, pump_h: []f64, // a pump's design point: EPANET fits its curve (shut-off at 4/3 h, twice q at none)
+	pump_q, pump_h: []f64, // a pump's design point: EPANET fits its curve (shut-off at 4/3 h, twice q at none); read on rewire
 	pump_power: []f64,     // or a constant-power pump, when > 0
 }
 
+Chemical_Kind :: enum u8 { CHEM, AGE, TRACE }
 Chemical :: struct {
-	decay:   f64,          // bulk, first order, per day; negative decays
+	kind:    Chemical_Kind,
+	trace:   int,          // .TRACE: the node traced
+	decay:   f64,          // bulk coefficient, per day; negative decays
+	wall:    f64,          // wall coefficient, per day
+	init:    []f64,        // initial quality per node; nil = zero
 	sources: []Source,     // where it comes in
 }
-Source :: struct { node: int, kind: Source_Kind, strength: f64 }
+Source :: struct { node: int, kind: Source_Type, strength: f64, pattern: int } // pattern: the Sim's Model's, from 1; 0 = none
 
-Sim_Options :: struct {
-	flow_units:     Flow_Units,       // what every column is in; .LPS makes the rest metres and millimetres
-	headloss:       Headloss_Formula, // .HW
-	demand_model:   Demand_Model,     // .DDA; .PDA with the two pressures below
+Sim_Options :: struct {        // a zero is EPANET's default
+	flow_units:     Flow_Units,       // CFS; .LPS and up make the rest metres and millimetres
+	pressure_units: Pressure_Units,   // PSI, or metres with metric flow units
+	headloss:       Headloss_Formula, // HW
+	demand_model:   Demand_Model,     // DDA; .PDA with the two pressures below
 	min_pressure, required_pressure, pressure_exponent: f64,
-	emitter_exponent: f64,            // 2 (EPANET keeps 1/x)
+	emitter_exponent: f64,            // 0.5
 	trials:         int,              // 200
 	accuracy:       f64,              // 0.001
-	unbalanced:     Unbalanced,       // {.STOP} or {.CONTINUE, extra_trials}
+	continue_unbalanced: bool,        // EPANET's UNBALANCED CONTINUE, with extra_trials more; off = STOP
+	extra_trials:   int,
 	hydraulic_step: i32,              // 3600 s; the most a step advances
-	quality_step:   i32,              // 0: a tenth of the hydraulic step
+	quality_step:   i32,              // a tenth of the hydraulic step
+	specific_gravity, viscosity, demand_multiplier: f64,
 }
 
 Node_Out :: struct {
 	solved:    []bool, // false: no path to a reservoir or tank, so left out and zero
 	pressure, head: []f64,
-	demand:    []f64,  // delivered
+	demand:    []f64,  // consumer demand delivered
 	wanted:    []f64,  // asked for (PDA: the share delivered is demand / wanted)
-	emitter_flow: []f64,
+	outflow:   []f64,  // EPANET's node demand: everything leaving the node; at a tank, the net inflow
+	emitter_flow, leak_flow: []f64,
 	quality:   [][]f64, // [chemical][node]
 }
 Link_Out :: struct {
 	flow, velocity, headloss: []f64,
 	energy:  []f64,     // a pump's kW
+	setting: []f64,     // a pump's speed, a valve's setting; a pipe's roughness
 	status:  []Status,
 	quality: [][]f64,   // [chemical][link]
 }
 ```
 
-Every column is a slice over one block the `Sim` owns, sized once at
-`sim_make`. A node is its index in `nodes`; a link, in `links`; a result,
-the same index in `out`. There is no name anywhere in a `Sim`: a program
-that has names keeps its own map, as every game and every database does.
+Every column is a slice the `Sim` owns, sized at `sim_make` (a row past
+the room moves the columns). A node is its index in `nodes`; a link, in
+`links`; a result, the same index in `out`. There is no name anywhere in
+a `Sim`: a program that has names keeps its own map, as every game and
+every database does; `sim_from_model` hands the file's names back as
+`Ids`.
 
 ### The procs
 
 ```odin
 sim_make   :: proc(node_cap, link_cap: int, opts: Sim_Options, allocator := context.allocator) -> Sim
 sim_delete :: proc(sim: ^Sim)
-sim_copy   :: proc(sim: ^Sim, allocator := context.allocator) -> Sim   // the whole state: a what-if, a look ahead
+sim_copy   :: proc(sim: ^Sim, allocator := context.allocator) -> Sim   // a what-if, a look ahead
 
 node_add    :: proc(sim: ^Sim, kind: Node_Kind) -> int   // a row, zeroed; fill its columns
-node_remove :: proc(sim: ^Sim, i: int)                   // the last row takes its place; links follow
+node_remove :: proc(sim: ^Sim, i: int)                   // the last row takes its place; links follow; links that touched i are emptied
 link_add    :: proc(sim: ^Sim, kind: Link_Kind, from, to: int) -> int
 link_remove :: proc(sim: ^Sim, k: int)
 
 // Solve at sim.t with the tanks where they are, write out, move the tanks and
-// the clock on by dt: the hydraulic step, or less when a tank fills, empties
-// or a chemical front says so. dt == 0 means nothing moved (an error).
+// the clock on by dt: the hydraulic step, or less when a tank fills or
+// empties, a control fires or the model's times say so. dt == 0 with no
+// error is the end of a model's duration (a bare Sim has none).
 sim_step  :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error)
 // Solve at sim.t again without moving: after an edit mid-step.
 sim_solve :: proc(sim: ^Sim) -> (warn: Warning, err: Error)
 ```
 
-**Values are read every step.** `sim_step` converts every column into the
-engine's units each time (an O(n) copy, nothing beside a solve), so a
-demand or a status changed in place is simply seen. The caller never says
-"I changed a value".
+**Values are read every step.** `sim_step` converts every value column
+into the engine's units each time (an O(n) copy, nothing beside a solve),
+so a demand, an elevation or a diameter changed in place is simply seen.
+The three columns that are state as well — a link's `status` and
+`setting`, a tank's `level` — are applied when they differ from what the
+step last saw, and otherwise left to the engine: a pump the solver shut
+off stays shut until the solver reopens it or the caller writes the
+column. The caller never says "I changed a value".
 
 **Structure is read when told.** `node_add`, `link_add`, `node_remove`
 and `link_remove` set `sim.rewire`; a caller that changes a `kind`, a
-`from` or a `to` by hand sets it too. The next step rebuilds the plan:
-which nodes a source reaches, the engine's own numbering (junctions first,
-tanks and reservoirs after, as EPANET's solver needs), the sparse matrix
-shape. That is a parse's worth of work for a big network and nothing for a
-game's.
+`from` or a `to` by hand sets it too, and so does one that changes a
+pump's design point or the `chemicals`. The next step rebuilds the plan:
+which rows a source reaches, the engine's own numbering (junctions first,
+tanks and reservoirs after, as EPANET's solver needs), the matrix shape,
+the solvers opened at the clock with the tanks at their levels. That is a
+parse's worth of work for a big network and nothing for a game's.
 
 **What cannot be solved is left out, not refused.** A node no link
 touches, or a part of the network no reservoir or tank is joined to, is
 not sent to the solver: `out.solved[i]` is false and its results are zero.
-With nothing reachable the step solves nothing, moves the clock, and warns
-`.Nothing_To_Solve`. EPANET's errors 223, 224 and 233 do not exist here.
-(This is the one place the Odin face means something other than EPANET:
-Waterworks had to compute it in JavaScript; a program that wants EPANET's
-refusal has the toolkit.)
+With no junction reachable the step solves nothing, moves the clock, and
+warns `.Nothing_To_Solve`. EPANET's errors 223, 224 and 233 do not exist
+here. (This is the one place the Odin face means something other than
+EPANET: Waterworks had to compute it in JavaScript; a program that wants
+EPANET's refusal has the toolkit.)
 
 **Chemicals ride the same hydraulics.** After each hydraulic step the
 transport runs once per chemical over that step, each with its own
-segments, sources and decay. One solve, N chemicals. (Waterworks solves
-the hydraulics once per mineral, because an EPANET project carries one.)
+segments, sources, decay and solver state; the network's per-chemical
+arrays are swapped in for its turn. One solve, N chemicals. A `Sim`
+made from a `Model` holds the model's own quality as chemical 0, with the
+model's per-pipe coefficients, orders and tolerance riding inside; the
+chemicals a program adds after it get the plain first-order kinetics the
+struct describes. (Waterworks solves the hydraulics once per mineral,
+because an EPANET project carries one.)
 
 **No patterns, controls or rules in a bare Sim.** The caller is the
 controller: it sets the demands for the hour and closes the pipe itself
@@ -208,11 +241,13 @@ controls and rules inside and plays them each step, which is how
 `simulate` reproduces EPANET's run. (rung 1 for the game: Waterworks has
 its own clock and its own day curve.)
 
-**Nothing allocates in a step.** The `Sim` sized itself at `sim_make`; a
-step runs in the loop of a game at a frame's pace. A pure function of the
-struct: the same columns give the same numbers, bit for bit, which is what
-a replay or a lockstep multiplayer wants; one `Sim` per thread, nothing in
-the package is global but read-only tables.
+**A step allocates what the engine allocates.** The columns are sized
+at `sim_make`; the rebuild is where the work is. Inside the step the
+quality segments grow as EPANET's do (from the project's arena) and the
+rules take a scratch list; nothing else. A step is a pure function of the
+struct: the same columns give the same numbers, bit for bit, which is
+what a replay or a lockstep multiplayer wants; one `Sim` per thread,
+nothing in the package is global but read-only tables.
 
 **Times are `i32` seconds.** A day is 86 400; the type crosses to
 JavaScript as a number, where an `i64` does not.
@@ -228,13 +263,14 @@ Warning :: enum i32 {
 	None, Unbalanced = 1, Unstable, Disconnected, Pumps, Valves, Negative_Pressure,
 	Nothing_To_Solve = 7,
 }
-error_message :: proc(err: Error) -> string   // EPANET's text (errors.odin, already there)
+error_text :: proc(err: Error) -> string   // EPANET's text (errors.odin)
 ```
 
 EPANET's numbers stay the values, so a code read from a report, a C
 program or the toolkit means the same thing. `err != nil` is the test.
-`sim.fault` names the node or link an error is about (a valve on a
-reservoir, a pump with no curve), so a game can point at it.
+`sim.fault` names the node or link an error is about (a pump with no
+curve and no power, a valve on a reservoir, a duplicate or undefined
+name), so a game can point at it.
 
 ## Model
 
@@ -244,94 +280,113 @@ reservoir, a tank, a pipe, a pump and a valve are one `Entity` with a
 `kind`; unused fields stay zero. It is the `.inp` file's row and
 bywater-mill's `Entity`, so a program's own table maps one to one.
 Patterns and curves are series and controls and rules are statements:
-those keep their own small shapes.
+those keep their own small shapes. Every number is in the file's own
+units; a zero where the reader would have supplied a default gets that
+default (a pipe of no length is 330 ft or 100 m, a pump of no speed runs
+at 1), and a reaction coefficient of `MISSING` is the global one, as the
+reader leaves it.
 
 ```odin
 Model :: struct {
 	title:    [3]string,
 	entities: []Entity,
-	patterns: []Pattern,
-	curves:   []Curve,
+	patterns: []Model_Pattern,
+	curves:   []Model_Curve,
 	controls: []Control,
 	rules:    []Rule,
-	options:  Options,
-	times:    Times,
-	problems: []Problem,  // what load could not read; empty when the file was clean
+	options:  Options,     // DEFAULT_OPTIONS to start from
+	times:    Model_Times, // DEFAULT_TIMES
+	report:   Report_Spec, // default_report()
+	aux:      []string,    // the [LABELS] and [BACKDROP] sections, line by line, written back as they were
+	problems: []Problem,   // what load could not read; empty when the file was clean
+	arena:    ^virtual.Arena, // what load allocated from; nil for a Model a program built
 }
 
-Kind :: enum { JUNCTION, RESERVOIR, TANK, PIPE, PUMP, VALVE }
+Kind :: enum u8 { JUNCTION, RESERVOIR, TANK, PIPE, PUMP, VALVE }
 
 Entity :: struct {
 	id:       string,
 	kind:     Kind,
 	x, y:     f64,       // MISSING when the file had none
 	vertices: [][2]f64,  // a link's bends
+	comment, tag: string,
+	report:   bool,      // named in the [REPORT] NODES or LINKS list
 	// a node
-	elevation:    f64,
+	elevation:    f64,   // a reservoir's head
 	demands:      []Demand,
 	emitter:      f64,
+	init_quality: f64,
+	has_source:   bool,
+	source:       Source_Spec,
 	head_pattern: string,   // a reservoir's
-	init_level, min_level, max_level, min_volume: f64, // a tank's
+	init_level, min_level, max_level, min_volume, diameter: f64, // a tank's; diameter a pipe's and a valve's too
 	volume_curve: string,
 	overflow:     bool,
 	mixing:       Mix_Model,
-	mixing_fraction: f64,   // 1 when not given
-	init_quality: f64,
-	source:       Source_Spec, // kind == .NONE when there is none
+	mixing_fraction: f64,   // 0 = 1
+	bulk_coeff, wall_coeff: f64, // MISSING = the global one
 	// a link
 	from, to:     string,
 	length, roughness, minor_loss: f64,
-	diameter:     f64,      // a pipe's, a valve's; a tank's too
-	bulk_coeff, wall_coeff: f64, // MISSING = the global one
 	leak_area, leak_expansion: f64,
 	check_valve:  bool,
+	status:       Status,   // OPEN or CLOSED, a valve's ACTIVE; unset = the kind's default
 	power:        f64,      // a constant-power pump; 0 = none
 	head_curve:   string,
-	speed:        f64,      // 1 when not given
+	speed:        f64,      // 0 = 1
 	speed_pattern, energy_pattern, efficiency_curve: string,
 	energy_price: f64,
-	valve:        Valve_Type,
+	valve:        Link_Type, // PRV … PCV
 	setting:      f64,
 	loss_curve:   string,   // a GPV's head loss curve, a PCV's position curve
-	status:       Status,
-	comment, tag: string,
 }
-Demand :: struct { base: f64, pattern, name: string }
-Source_Spec :: struct { kind: Source_Kind, strength: f64, pattern: string }
-Pattern :: struct { id: string, factors: []f64, comment: string }
-Curve   :: struct { id: string, kind: Curve_Type, x, y: []f64, comment: string }
-Control :: struct { link: string, status: Status, setting: f64, kind: Control_Type, node: string, level: f64, time: i64, enabled: bool }
-Rule    :: struct { text: string }  // EPANET's grammar, one clause per line: one grammar, not two (rung 1)
-Options :: struct { … EPANET's options by name, typed; DEFAULT_OPTIONS to start from … }
-Times   :: struct { duration, hydraulic_step, quality_step, pattern_step, pattern_start, report_step, report_start, rule_step, start_clocktime: i64, statistic: Time_Stat }
+Demand        :: struct { base: f64, pattern, name: string }
+Source_Spec   :: struct { kind: Source_Type, strength: f64, pattern: string }
+Model_Pattern :: struct { id: string, factors: []f64, comment: string }
+Model_Curve   :: struct { id: string, kind: Curve_Type, x, y: []f64, comment: string }
+Control       :: struct { link: string, status: Status, setting: f64, kind: Control_Type, node: string, level: f64, time: i64, disabled: bool }
+Rule          :: struct { text: string }  // EPANET's grammar, one clause per line, from its RULE line: one grammar, not two (rung 1)
+Options       :: struct { … EPANET's [OPTIONS], the global [REACTIONS] and [ENERGY] lines, by name, typed … }
+Model_Times   :: struct { duration, hydraulic_step, quality_step, pattern_step, pattern_start, report_step, report_start, rule_step, start_clocktime: i64, statistic: Time_Stat }
+Report_Spec   :: struct { page_size: int, summary, messages: bool, status: int, energy: bool, nodes, links: int, fields: [Field]Report_Field, file: string }
 
 load         :: proc(path: string, allocator := context.allocator) -> (model: Model, err: Error)
 parse        :: proc(text: string, allocator := context.allocator) -> (model: Model, err: Error)
-write_inp    :: proc(model: Model, path: string) -> Error
-delete_model :: proc(model: Model)
+write_inp    :: proc(model: ^Model, path: string) -> Error
+delete_model :: proc(model: ^Model)
 ```
 
-A file with bad lines still comes back, `problems` filled and
-`err == .Input_Errors` (EPANET's 200): a program can show them.
+A file with bad lines still comes back, `problems` filled (the line, the
+code, the text) and `err == .Input_Errors` (EPANET's 200): a program can
+show them.
 
-### Model to Sim
+### Model to Sim, and the engine from a Model
 
 ```odin
-sim_from_model :: proc(model: Model, allocator := context.allocator) -> (sim: Sim, ids: Ids, err: Error)
+sim_from_model :: proc(model: ^Model, allocator := context.allocator) -> (sim: Sim, ids: Ids, err: Error)
 Ids :: struct { node, link: []string, node_index, link_index: map[string]int }
+
+project_from_model :: proc(model: ^Model) -> Built   // the engine's project, as the reader would build it
 ```
 
 The one conversion: entities to columns (the nodes in the model's order,
-the links in theirs), the patterns, controls and rules kept inside the
-`Sim` to play each step, the names handed back beside it for whoever
-wants them. A program that only has a `Sim` and wants a file writes a
-`Model` from the columns; that is `model_from_sim`, when someone needs it.
+the links in theirs), the patterns, controls, rules and quality options
+kept inside the `Sim` to play each step, the names handed back beside it
+for whoever wants them. Under it, `project_from_model` builds the
+engine's project from a `Model` the way the reader builds one from a
+file — the same tables, the same defaults, the same order — and then the
+reader's own tail puts it in internal units; `cmd/dumpnet --model` proves
+on every fixture that the file read as a `Model` and built back is the
+reader's project byte for byte. A `Sim` builds its engine from an
+*effective* `Model` on every rewire: its rows as entities (the model's
+own entity, where a row came from one, with the columns written over it),
+the model's extras, the reachable part only.
 
 ## Results
 
 ```odin
-simulate :: proc(model: Model, allocator := context.allocator) -> (r: Results, warn: Warning, err: Error)
-delete_results :: proc(r: Results)
+simulate :: proc(model: ^Model, allocator := context.allocator) -> (r: Results, warn: Warning, err: Error)
+delete_results :: proc(r: ^Results, allocator := context.allocator)
 
 Results :: struct {
 	periods:  []i32,        // reporting times (report start, every report step)
@@ -339,18 +394,20 @@ Results :: struct {
 	node:     Node_Table,   // [period][node]
 	link:     Link_Table,   // [period][link]
 	warnings: []Warning,    // one per period
-	energy:   []Pump_Usage, // one per pump: the energy table's row
-	mass_balance: Mass_Balance,
+	energy:   []Pump_Usage, // one per pump: EPANET's energy statistics
+	mass_balance: []Mass_Balance, // one per chemical
+	ids:      Ids,          // the names, by row
 }
 Node_Table :: struct { demand, head, pressure, quality: [][]f64 }
-Link_Table :: struct { flow, velocity, headloss, quality, status, setting, reaction, friction: [][]f64 }
+Link_Table :: struct { flow, velocity, headloss, quality, setting: [][]f64, status: [][]Status }
 ```
 
 `simulate` is `sim_from_model`, a loop of `sim_step` with `sim.out` copied
-at the reporting times, `sim_delete`; nothing a program cannot do itself.
-Each `[][]f64` is one flat allocation with a slice header per period, so a
-column is contiguous and a program that wants the block has it. The four
-node and eight link variables are the ones EPANET's output file holds.
+at the reporting times (`sim.at_report`), `sim_delete`; nothing a program
+cannot do itself. Each `[][]f64` is one flat allocation with a slice
+header per period, so a column is contiguous and a program that wants the
+block has it. The four node and six link variables are the ones EPANET's
+output file holds, less the reaction rate and friction factor.
 
 ## WebAssembly
 
@@ -376,7 +433,7 @@ spring := epanet.node_add(&sim, .RESERVOIR); sim.nodes.head[spring] = 204
 house  := epanet.node_add(&sim, .JUNCTION);  sim.nodes.elevation[house] = 140; sim.nodes.demand[house] = 0.3
 main   := epanet.link_add(&sim, .PIPE, spring, house)
 sim.links.length[main], sim.links.diameter[main], sim.links.roughness[main] = 312, 100, 140
-sim.chemicals = {{decay = -8, sources = {{node = spring, kind = .CONCEN, strength = 2}}}}
+sim.chemicals = {{decay = -8, sources = {{node = spring, kind = .CONCEN, strength = 2}}}}  // read on the next rewire
 
 // each game quarter hour
 sim.nodes.demand[house] = base_demand * day_curve[hour]      // the game is the controller
@@ -398,16 +455,16 @@ game does today, is `sim_copy` and stepping the copy to midnight.
 **bywater-mill**, a run from its own tables and the results per entity:
 
 ```odin
-model := epanet.Model{entities = entities[:], options = epanet.DEFAULT_OPTIONS, times = epanet.DEFAULT_TIMES}
+model := epanet.Model{entities = entities[:], options = epanet.DEFAULT_OPTIONS, times = epanet.DEFAULT_TIMES, report = epanet.default_report()}
 model.times.duration = 24 * 3600
-r, warn, err := epanet.simulate(model)
-pressure_of_entity := r.node.pressure[k][node_of_entity[e]]
+r, warn, err := epanet.simulate(&model)
+pressure_of_entity := r.node.pressure[k][r.ids.node_index[entity_id]]
 ```
 
 Fire flow, one demand at a time on one `Sim`:
 
 ```odin
-sim, ids, err := epanet.sim_from_model(model)
+sim, ids, err := epanet.sim_from_model(&model)
 defer epanet.sim_delete(&sim)
 for hydrant in hydrants {
 	sim.nodes.demand[hydrant] += 1500
@@ -420,17 +477,18 @@ for hydrant in hydrants {
 The timeline, every event:
 
 ```odin
-for sim.t < duration {
+for {
+	at := sim.t
 	dt, warn, err := epanet.sim_step(&sim)
-	if err != nil do break
-	if sim.t % report_step == 0 do film_append(&film, sim.t, sim.out.pressure, sim.link_out.flow)
+	if err != nil || dt == 0 do break
+	if sim.at_report do film_append(&film, at, sim.out.pressure, sim.link_out.flow)
 }
 ```
 
 A thousand what-ifs, one per thread, each from the same start:
 
 ```odin
-base, _, _ := epanet.sim_from_model(model)
+base, _, _ := epanet.sim_from_model(&model)
 for variant, i in variants {   // each on its own thread
 	sim := epanet.sim_copy(&base)
 	sim.links.diameter[variant.link] = variant.diameter
@@ -440,7 +498,8 @@ for variant, i in variants {   // each on its own thread
 }
 ```
 
-(The surface and these examples type-check as a stub package.)
+(The surface is what `epanet/model.odin`, `sim.odin` and `simulate.odin`
+export; `cmd/check` is these examples, run.)
 
 ## Decisions
 
@@ -465,9 +524,16 @@ for variant, i in variants {   // each on its own thread
 - **The caller is the controller in a bare `Sim`.** Patterns, controls
   and rules are a file's way of saying what a program says in code; they
   play only inside a `Sim` made from a `Model`.
-- **No Project, no files, no callbacks, no names in a `Sim`.** The
-  numbers come back as data; EPANET's paper, when anyone wants it, is one
-  proc written from a `Model` and a `Results`.
+- **No Project, no files, no callbacks, no names in a `Sim`'s face.**
+  The numbers come back as data; EPANET's paper, when anyone wants it, is
+  the toolkit's. (Inside, the engine's `Project` is kept whole: see *The
+  shape*.)
+- **A copy rebuilds.** `sim_copy` takes the columns, the clock and each
+  chemical's node qualities and rebuilds the engine on its first step:
+  the tanks at their levels, the flows started afresh, so a copy goes on
+  within the solver's accuracy (a relative flow change of 1e-3), not to
+  the bit. Cloning the solver's state, the segments included, is the next
+  rung, when a use needs it.
 - **EPANET's error numbers as the enum's values.** One meaning
   everywhere, plus the one warning EPANET never gives because it refuses
   instead.
@@ -484,28 +550,33 @@ for variant, i in variants {   // each on its own thread
 
 ## Where it goes, in order
 
-Each step is checked the way the port has been: the same bytes as EPANET,
+Each step was checked the way the port has been: the same bytes as EPANET,
 and, for what EPANET cannot do, two roads to one answer.
 
-1. **`sim.odin`** — `Sim`, its columns, `sim_make`/`sim_delete`/`sim_copy`,
-   the row procs, the plan (reach, the engine's numbering, the matrix
-   shape) over `open.odin`, `sim_step` and `sim_solve` over `init_hyd`,
-   `run_hyd`, `next_hyd` and the quality transport, N chemicals. The
-   engine's struct becomes `Sim`; the report and file state leave it for
-   `api/`. `Error`, `Warning`; `errors.odin` gives `error_message`.
-2. **`model.odin`, `load`, `sim_from_model`** — the parser's second half
-   writes a `Model`; `sim_from_model` is the parser's tail over it.
-   `cmd/dumpnet` dumps the `Sim` and keeps proving the pair against
-   EPANET's reader, byte for byte, on every fixture.
-3. **`simulate`** — a new driver, `cmd/run`, prints what `harness/run.c`
-   prints and must match `run-c` on every fixture: the `Sim`'s step loop
-   reproduces EPANET's run, events, patterns, controls and rules included.
-4. **The bare road** — a fixture built with `node_add`/`link_add` and
-   stepped must give the same numbers as the same network through `.inp`
-   and `simulate`: Waterworks' `check.mjs` network, laid both ways.
-   Then N chemicals against N single-chemical EPANET runs.
-5. **`write_inp`**, checked by a round trip: `load` → `write_inp` → `load`
-   dumps the same.
-6. **wasm** — the package built for `wasm32`, the column addresses
+1. **`sim.odin`** — done. `Sim`, its columns, `sim_make`/`sim_delete`/
+   `sim_copy`, the row procs, the plan (reach, the engine's numbering,
+   the matrix shape) over `open.odin`, `sim_step` and `sim_solve` over
+   `init_hyd`, `run_hyd`, `next_hyd` and the quality transport, N
+   chemicals. `Error`, `Warning`; `errors.odin` gives `error_text`.
+2. **`model.odin`, `load`, `sim_from_model`** — done. The reader stops
+   before converting (`read_text`), `model_from_project` reads the Model
+   out of that, `project_from_model` builds the project back and runs the
+   reader's tail. `cmd/dumpnet --model` proves the pair byte for byte on
+   every fixture.
+3. **`simulate`** — done. `cmd/run` prints what `harness/run.c` prints
+   and matches it on every fixture: the `Sim`'s step loop reproduces
+   EPANET's run, events, patterns, controls and rules included.
+4. **The bare road** — done. `cmd/check`: a network laid with
+   `node_add`/`link_add` and stepped gives the same bytes as the same
+   network as a `Model` through `simulate`; two chemicals on one `Sim`
+   give the same bytes as two single-chemical runs; a loose junction is
+   left out; a copy goes on; an edit is seen; a pump with no curve is an
+   error naming its row.
+5. **`write_inp`** — done, checked by `cmd/inp` against the toolkit's
+   `EN_saveinpfile` of the same file, byte for byte on every fixture, and
+   by a round trip through a file that runs the same.
+6. **wasm** — next. The package built for `wasm32`, the column addresses
    exported, Waterworks' `solver.js` and `net.js#inp` replaced; its
    `check.mjs` is the test, and its day must read the same as before.
+   The engine still imports `core:c/libc` for the report and the files,
+   which the step does not need; that import is the first thing to move.

@@ -108,6 +108,8 @@ Project :: struct {
 	flow_units:                   Flow_Units,
 	pressure_units:               Pressure_Units,
 	inp_fname, map_fname:         string,
+	aux:                          []string, // the [LABELS] and [BACKDROP] sections, line by line as read
+	problems:                     []Problem, // the lines the reader could not take
 	tmp_hyd_fname, tmp_out_fname: string, // scratch files
 	tmp_stat_fname:               string,
 	warnflag:                     int, // the last run's warning code

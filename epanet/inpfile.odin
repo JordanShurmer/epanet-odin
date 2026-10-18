@@ -492,9 +492,16 @@ fmt4 :: proc(x: f64) -> string {
 }
 
 // save_aux_data copies the [LABELS] and [BACKDROP] sections of the file
-// the project was read from, line for line.
+// the project was read from, line for line; a project with no file
+// (built from a Model) writes the lines it was given.
 save_aux_data :: proc(p: ^Project, f: ^libc.FILE) {
-	if len(p.inp_fname) == 0 do return
+	if len(p.inp_fname) == 0 {
+		for line in p.aux {
+			if len(line) > 0 && line[0] == '[' do libc.fprintf(f, "\n")
+			libc.fprintf(f, "%s", tc(line))
+		}
+		return
+	}
 	in_file := libc.fopen(tc(p.inp_fname), "rt")
 	if in_file == nil do return
 	defer libc.fclose(in_file)

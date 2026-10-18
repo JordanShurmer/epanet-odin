@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# package.sh — build the toolkit library and dumpnet, and tar them up for a release.
+# package.sh — build the toolkit library, dumpnet and run, and tar them up for a release.
 #
 #   ./package.sh <version> <platform>     build/epanet-odin-<version>-<platform>.tar.gz
 #   ./package.sh v0.1.0 linux-amd64 -v    name each step
@@ -14,6 +14,7 @@
 #                          API is EPANET's, so the headers are too (MIT; its
 #                          licence is beside them)
 #   bin/dumpnet            reads an .inp and prints the project
+#   bin/run                runs an .inp through the Odin API and prints every result
 #   LICENSE, README.md
 # Not in it: the Odin package epanet/ — an Odin program takes the source.
 #
@@ -63,6 +64,11 @@ if run "$ODIN" build cmd/dumpnet -out:"$P/bin/dumpnet" -o:speed -vet -strict-sty
     ok "bin/dumpnet"
 else
     bad "odin build dumpnet"
+fi
+if run "$ODIN" build cmd/run -out:"$P/bin/run" -o:speed -vet -strict-style; then
+    ok "bin/run"
+else
+    bad "odin build run"
 fi
 if cp "$EP/include/epanet2_2.h" "$EP/include/epanet2_enums.h" "$P/include/" &&
         cp "$EP/LICENSE" "$P/include/LICENSE-EPANET" && cp LICENSE README.md "$P/"; then

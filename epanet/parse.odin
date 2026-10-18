@@ -40,11 +40,19 @@ SECTION_NAMES := [?]string {
 	"[BACKDROP]", "[TAGS]", "[LEAKAGE]", "[END]",
 }
 
-// A demand category, kept per node while reading.
-Demand :: struct {
+// A demand category, kept per node while reading (the Model has its own Demand).
+Parsed_Demand :: struct {
 	base: f64,
 	pat:  i32,
 	name: string,
+}
+
+// Problem is one line the reader could not take: its number in the file
+// (from 1), EPANET's error code, and the line as written.
+Problem :: struct {
+	line: int,
+	code: int,
+	text: string,
 }
 
 // Parser is the reader's state between lines.
@@ -62,8 +70,10 @@ Parser :: struct {
 	// tables that grow while reading
 	pattern_f:             [dynamic][dynamic]f64,
 	curve_x, curve_y:      [dynamic][dynamic]f64,
-	demands:               [][dynamic]Demand,
+	demands:               [][dynamic]Parsed_Demand,
 	vx, vy:                [][dynamic]f64, // vertices per link
+	// what could not be read, line by line
+	problems:              [dynamic]Problem,
 	// rules in progress
 	rule_label:            [dynamic]string,
 	rule_state:            Rule_Logic,
@@ -277,8 +287,18 @@ read_inp :: proc(p: ^Project, path: string) -> (errcode: int) {
 	context.allocator = virtual.arena_allocator(&p.arena)
 	data, rerr := os.read_entire_file_from_path(path, context.allocator)
 	if rerr != nil do return 302
+	errcode = read_text(p, string(data))
+	if errcode == 0 || errcode == 200 do finish_project(p)
+	return
+}
+
+// read_text reads the file's text into the project as written: every
+// value in the file's own units, the tables finished, nothing converted.
+// The caller's allocator is the project's. (model.odin reads a Model from
+// this state; finish_project takes it the rest of the way.)
+read_text :: proc(p: ^Project, text: string) -> (errcode: int) {
 	ps := Parser{p = p}
-	ps.lines = split_lines(string(data))
+	ps.lines = split_lines(text)
 	set_defaults(p)
 	init_report(p)
 	errcode = netsize(&ps)
@@ -288,12 +308,18 @@ read_inp :: proc(p: ^Project, path: string) -> (errcode: int) {
 	if errcode == 0 || errcode == 200 {
 		reindex_tanks(&ps)
 		finish_tables(&ps)
-		adjust_data(p)
-		init_tanks(p)
-		init_units(p)
-		convert_units(p)
 	}
+	p.problems = ps.problems[:]
 	return
+}
+
+// finish_project fills in what depends on other data and puts the
+// project in internal units: the reader's tail, and the builder's.
+finish_project :: proc(p: ^Project) {
+	adjust_data(p)
+	init_tanks(p)
+	init_units(p)
+	convert_units(p)
 }
 
 // split_lines as fgets with a MAXLINE buffer would: a line longer than
@@ -578,7 +604,7 @@ get_headloss_option :: proc(p: ^Project, formula: string) -> bool {
 readdata :: proc(ps: ^Parser) -> int {
 	p := ps.p
 	nn := p.max_juncs + p.max_tanks
-	ps.demands = make([][dynamic]Demand, nn + 1)
+	ps.demands = make([][dynamic]Parsed_Demand, nn + 1)
 	ps.vx = make([][dynamic]f64, p.max_links + 1)
 	ps.vy = make([][dynamic]f64, p.max_links + 1)
 	ps.prev_pat = -1
@@ -611,30 +637,43 @@ readdata :: proc(ps: ^Parser) -> int {
 	sect := -1
 	errsum := 0
 	line_comment := ""
-	for raw in ps.lines {
+	aux: [dynamic]string // the [LABELS] and [BACKDROP] sections, as written
+	for raw, lineno in ps.lines {
 		ps.comment = gettokens(ps, raw)
 		ps.errtok = -1
+		// (EPANET's writer copies these two sections from the file, comment
+		// lines included, so they are kept as the writer would read them)
+		if (sect == int(Section.LABELS) || sect == int(Section.BACKDROP)) && len(first_token(raw)) > 0 && first_token(raw)[0] != '[' do append(&aux, raw)
 		if ps.ntok == 0 {
 			if sect == int(Section.PATTERNS) || sect == int(Section.CURVES) do line_comment = ps.comment
 			continue
 		}
 		if sect == int(Section.PATTERNS) || sect == int(Section.CURVES) do ps.comment = line_comment
 		line_comment = ""
-		if len(raw) >= MAXLINE do errsum += 1
+		if len(raw) >= MAXLINE {
+			errsum += 1
+			append(&ps.problems, Problem{lineno + 1, 214, strings.clone(raw)})
+		}
 		if ps.tok[0][0] == '[' {
 			newsect := findmatch(ps.tok[0], SECTION_NAMES[:])
 			if newsect >= 0 {
 				sect = newsect
 				if Section(sect) == .END do break
+				if Section(sect) == .LABELS || Section(sect) == .BACKDROP do append(&aux, raw)
 			} else {
 				sect = -1
 				errsum += 1
+				append(&ps.problems, Problem{lineno + 1, 299, strings.clone(raw)})
 			}
 			continue
 		}
 		if sect < 0 do continue
-		if inperr := newline(ps, Section(sect), raw); inperr > 0 do errsum += 1
+		if inperr := newline(ps, Section(sect), raw); inperr > 0 {
+			errsum += 1
+			append(&ps.problems, Problem{lineno + 1, inperr, strings.clone(raw)})
+		}
 	}
+	p.aux = aux[:]
 	return errsum > 0 ? 200 : 0
 }
 
@@ -765,7 +804,7 @@ juncdata :: proc(ps: ^Parser) -> int {
 	net.has_source[j] = false
 	net.ke[j] = 0
 	net.node_type[j] = .JUNCTION
-	append(&ps.demands[j], Demand{d, i32(pat), ""})
+	append(&ps.demands[j], Parsed_Demand{d, i32(pat), ""})
 	p.hyd.node_demand[j] = d
 	if errcode > 0 do return set_error(ps, errtok, errcode)
 	return 0

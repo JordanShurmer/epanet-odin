@@ -34,6 +34,7 @@ GROUPS = [
     ("toolkit", ["epanet.c", "project.c"],
                 ["api/api.odin", "api/edit.odin", "epanet/edit.odin", "epanet/open.odin", "epanet/export.odin", "epanet/errors.odin"]),
     (".inp writer", ["inpfile.c"], ["epanet/inpfile.odin"]),
+    ("the Odin API", [], ["epanet/model.odin", "epanet/sim.odin", "epanet/simulate.odin"]),
     ("declarations", ["types.h", "funcs.h", "text.h", "enumstxt.h", "hash.h", "mempool.h"], []),
     ("not ported", ["epanet2.c", "hash.c", "mempool.c",
                     "util/cstr_helper.c", "util/cstr_helper.h", "util/errormanager.c",
@@ -50,9 +51,12 @@ NOTES = {
     "epanet/network.odin": "the model and the solver state, one array per field",
     "epanet/export.odin": "the C face the harness plugs in through",
     "epanet/dump.odin": "the project as text, for the parse comparison",
+    "epanet/model.odin": "the .inp as data, one fat Entity per component",
+    "epanet/sim.odin": "a network as columns, edited at any time and stepped",
+    "epanet/simulate.odin": "a whole run as tables",
 }
 HARNESS = ["harness/bridge.c", "harness/run.c", "harness/rebuild.c", "harness/dumpnet.c", "harness/test.sh",
-           "harness/out.sh", "cmd/dumpnet/main.odin",
+           "harness/out.sh", "cmd/dumpnet/main.odin", "cmd/run/main.odin", "cmd/inp/main.odin", "cmd/check/main.odin",
            "audit/audit.sh", "audit/bench.c", "audit/loc.py", "audit/render.py"]
 
 DECISION = {

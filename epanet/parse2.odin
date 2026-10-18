@@ -29,7 +29,7 @@ demanddata :: proc(ps: ^Parser) -> int {
 		ps.demands[j][0] = {y, i32(pat), len(name) > 0 ? name : ps.demands[j][0].name}
 		p.hyd.node_demand[j] = MISSING
 	} else {
-		append(&ps.demands[j], Demand{y, i32(pat), name})
+		append(&ps.demands[j], Parsed_Demand{y, i32(pat), name})
 	}
 	return 0
 }

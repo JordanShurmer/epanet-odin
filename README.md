@@ -53,13 +53,25 @@ epanet/         the Odin package `epanet` — the rewrite
                   node, link, demand, pattern, curve, control or rule added or
                   taken out with every index moved
   inpfile.odin    the project written back as an .inp file
+  model.odin      the Odin API's rows: Model, one fat Entity per component, the
+                  .inp as data; load, parse, write_inp; the project built from
+                  it as the reader builds one
+  sim.odin        the Odin API's columns: Sim, a network edited at any time and
+                  stepped through time, N chemicals over one hydraulics, what no
+                  source reaches left out; sim_from_model
+  simulate.odin   a whole run of a Model as tables: Results
 api/            the toolkit: EN_* over the Odin project, its own static library
   api.odin        the running half: files, runs, the report, every getter
   edit.odin       the editing half: EN_init, EN_set*, EN_add*, EN_delete*
 cmd/dumpnet/    reads an .inp with the Odin reader and prints the project
+                (--model: the same file as a Model, built back)
+cmd/run/        runs an .inp through the Odin API and prints what harness/run.c prints
+cmd/inp/        reads an .inp as a Model and writes it back
+cmd/check/      the Odin API's own proofs: networks laid in code, two roads to one answer
 harness/        the plug-in validation
   test.sh         builds the four binaries (plain EPANET, the plug-in build, its
-                  shadow, and the pure Odin toolkit) and compares
+                  shadow, and the pure Odin toolkit) and the Odin API's commands,
+                  and compares
   bridge.c        the swapped symbols, with -DSHADOW running C and Odin side by side
   run.c           driver: every node and link value and quality, every step, %.17g,
                   and the report, output and hydraulics files when asked
@@ -102,10 +114,18 @@ Odin package. Three binaries of the same driver come out:
 | `run-c` | plain EPANET, the reference |
 | `run-odin` | the swapped symbols come from Odin |
 | `run-shadow` | the same, but every swapped call also runs the C original on a copy and compares, element by element |
+| `run-pure` | the same driver over the Odin toolkit library (`api/`) and no EPANET object at all |
+| `run-api` | not that driver: `cmd/run`, the file read as a `Model` and stepped as a `Sim` through the Odin API, printing the same lines |
 
-A fixture passes when `run-c` and `run-odin` print the same results
-(bit-exact, or within `TOL=1e-9` relative — then it says so) **and**
-`run-shadow` reports zero per-call mismatches. The shadow snapshots every
+A fixture passes when `run-c`, `run-odin`, `run-pure` and `run-api` print
+the same results (bit-exact, or within `TOL=1e-9` relative — then it says
+so) **and** `run-shadow` reports zero per-call mismatches, **and** the
+file read as a `Model` and built back dumps as the reader's project does
+(`dumpnet --model`), **and** written back (`cmd/inp`) it is the file the
+toolkit writes. `cmd/check` adds the road no file can take: a network laid
+with `node_add` and `link_add` and stepped by hand must give the same
+bytes as the same network as a `Model` through `simulate`, and two
+chemicals on one `Sim` the same bytes as two single-chemical runs. The shadow snapshots every
 array and struct field the engine writes before each call, so one pattern
 covers every symbol. The one thing it cannot do twice is evaluate the rules,
 which keep state of their own: on a network with rules the time step runs
@@ -305,17 +325,36 @@ Ported, equivalent on every fixture (bit-exact up to the tag `Identical`):
     writer prints a FILLTIME premise in h:m:s, which its own parser does
     not read back; fixed here, see *Where it departs from EPANET*).
 
-Next, in order:
+12. **The Odin API** — designed in [`API.md`](API.md), built in
+    `model.odin`, `sim.odin` and `simulate.odin`. A `Model` is the `.inp`
+    as data, one fat `Entity` per component in the file's units; `load`
+    reads one (a file with bad lines still comes back, its `problems`
+    listed), `write_inp` writes one, and `project_from_model` builds the
+    engine's project from it the way the reader builds one from the file,
+    so the two run to the same bytes (`dumpnet --model`, on every
+    fixture). A `Sim` is columns: nodes and links the caller edits at any
+    time, stepped through time with `sim_step`, its results in columns
+    beside them; values are read every step, structure when `rewire` is
+    set (a row added or removed sets it); what no tank or reservoir
+    reaches is left out and said so, not refused; N chemicals ride one
+    hydraulics, each with its own segments; a `Sim` made from a `Model`
+    keeps the model's patterns, controls, rules and quality options
+    inside and plays them each step. `simulate` is that loop with the
+    reporting times kept as `Results` tables. `cmd/run` proves the loop
+    is EPANET's run on every fixture, `cmd/check` that the bare road and
+    the model road give the same bytes. Two things the design did not
+    foresee: the engine's `Project` stays inside the `Sim` as its own
+    (built on rewire from an effective `Model`; nothing had to move to
+    `api/`), and `sim_copy` rebuilds the copy's engine on its first step
+    rather than cloning the solver's state, so a copy goes on within the
+    solver's accuracy, not to the bit.
 
-12. **The Odin API** — designed in [`API.md`](API.md), for games and
-    every other data-oriented use: a `Sim` whose network is columns the
-    caller edits at any time and steps through time, its results columns
-    beside them, N chemicals over one hydraulics, what no source reaches
-    left out rather than refused, nothing allocated in a step, wasm in
-    mind; a `Model` (one fat `Entity` per component, the `.inp` as data)
-    for files, `simulate` to `Results` as tables. No Project: the
-    engine's struct becomes `Sim`, and the files, report state and
-    `EN_*` semantics move to `api/`, which stays beside it for C programs.
+Next:
+
+13. **WebAssembly** — the package built for `wasm32`, the column
+    addresses exported, Waterworks' `solver.js` replaced. The engine
+    still imports `core:c/libc` for the report and the files; the step
+    itself does not need either.
 
 ## Living inside bywater-mill
 
@@ -371,6 +410,7 @@ epanet-odin-v0.1.0-linux-amd64/
   include/               epanet2_2.h, epanet2_enums.h (EPANET's own: the API
                          is EPANET's), LICENSE-EPANET
   bin/dumpnet            reads an .inp and prints the project
+  bin/run                runs an .inp through the Odin API and prints every result
   LICENSE  README.md
 ```
 

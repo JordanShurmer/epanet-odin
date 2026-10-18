@@ -27,7 +27,11 @@
 # plainly, which moves a last bit.) A second
 # driver (harness/rebuild.c), linked to c and to pure, reads each fixture,
 # builds it again through the editing API, runs that, writes both as .inp
-# and reads the second back: the prints and the files must match too.
+# and reads the second back: the prints and the files must match too. The
+# Odin API (model.odin, sim.odin) is held to the same: cmd/run prints the
+# same lines of each fixture through load, sim_from_model and sim_step;
+# cmd/dumpnet --model and cmd/inp read each fixture as a Model and write
+# it back as a project and as a file; cmd/check lays networks in code.
 #
 # ponytail: a shell loop over clang and objcopy; cmake stays out of it.
 set -uo pipefail
@@ -142,6 +146,10 @@ run $CC $CFLAGS -DSHADOW -c harness/bridge.c -o "$B/bridge-shadow.o" || bad "com
 run $CC $CFLAGS "$B/run.o" "$B"/c/*.o -lm -o "$B/run-c" || bad "link run-c"
 run $CC $CFLAGS "$B/dumpnet.o" "$B"/c/*.o -lm -o "$B/dumpnet-c" || bad "link dumpnet-c"
 run "$ODIN" build cmd/dumpnet -out:"$B/dumpnet-odin" $ODINFLAGS -vet -strict-style || bad "odin build dumpnet"
+note "odin build run inp check"
+run "$ODIN" build cmd/run -out:"$B/run-api" $ODINFLAGS -vet -strict-style || bad "odin build run"
+run "$ODIN" build cmd/inp -out:"$B/inp-api" $ODINFLAGS -vet -strict-style || bad "odin build inp"
+run "$ODIN" build cmd/check -out:"$B/check-api" $ODINFLAGS -vet -strict-style || bad "odin build check"
 note "odin build api"
 run "$ODIN" build api -build-mode:static -out:"$B/libepanet-api.a" \
     -no-entry-point $ODINFLAGS -vet -strict-style || bad "odin build api"
@@ -151,7 +159,7 @@ run $CC $CFLAGS "$B/rebuild.o" "$B/libepanet-api.a" -lm -o "$B/rebuild-pure" || 
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge.o" "$B/libepanet-odin.a" -lm -o "$B/run-odin" || bad "link run-odin"
 run $CC $CFLAGS "$B/run.o" "$B"/odin/*.o "$B/bridge-shadow.o" "$B/libepanet-odin.a" -lm -o "$B/run-shadow" || bad "link run-shadow"
 [ "$_fail" -eq 0 ] || { tally "epanet-odin"; exit 1; }
-ok "build c odin shadow pure dumpnet rebuild"
+ok "build c odin shadow pure dumpnet rebuild run inp check"
 
 # ── compare ─────────────────────────────────────────────────────────────
 # (same / same_bin from harness/same.sh: cmp first, then within TOL)
@@ -271,6 +279,41 @@ check_parse() {
     else
         bad "$fx parse" "$(diff "$B/$fx.dump.c.txt" "$B/$fx.dump.odin.txt" | head -5)" "diff $B/$fx.dump.c.txt $B/$fx.dump.odin.txt"
     fi
+    # the same file as a Model (load) built back into a project: nothing lost
+    "$B/dumpnet-odin" --model "$inp" >"$B/$fx.dump.model.txt" 2>&1
+    if cmp -s "$B/$fx.dump.odin.txt" "$B/$fx.dump.model.txt"; then
+        ok "$fx model round trip bit-exact"
+    else
+        bad "$fx model round trip" "$(diff "$B/$fx.dump.odin.txt" "$B/$fx.dump.model.txt" | head -5)" "diff $B/$fx.dump.odin.txt $B/$fx.dump.model.txt"
+    fi
+}
+
+# check_api FIXTURE — the Odin API (cmd/run: load, sim_from_model, a loop
+# of sim_step) must print what the toolkit prints of the same file, and
+# the Model written back (cmd/inp) must be the file the toolkit writes.
+check_api() {
+    inp=$1
+    fx=$(basename "$inp" .inp)
+    if [ -f "$B/$fx.pure.txt" ] && grep -q '^massbalance' "$B/$fx.pure.txt"; then
+        "$B/run-api" "$inp" >"$B/$fx.api.txt" 2>"$B/$fx.api.err"
+        if cmp -s "$B/$fx.pure.txt" "$B/$fx.api.txt"; then
+            ok "$fx api results bit-exact"
+        elif diff=$(same "$B/$fx.pure.txt" "$B/$fx.api.txt"); then
+            ok "$fx api results within $TOL"
+        else
+            bad "$fx api results" "$diff $(head -1 "$B/$fx.api.err")" "diff $B/$fx.pure.txt $B/$fx.api.txt"
+        fi
+    fi
+    if [ -f "$B/$fx.rb.pure.orig.inp" ]; then
+        "$B/inp-api" "$inp" "$B/$fx.api.inp" 2>"$B/$fx.api.inp.err"
+        if cmp -s "$B/$fx.rb.pure.orig.inp" "$B/$fx.api.inp"; then
+            ok "$fx api .inp identical"
+        elif diff=$(same "$B/$fx.rb.pure.orig.inp" "$B/$fx.api.inp"); then
+            ok "$fx api .inp within $TOL"
+        else
+            bad "$fx api .inp" "$diff $(head -1 "$B/$fx.api.inp.err")" "diff $B/$fx.rb.pure.orig.inp $B/$fx.api.inp"
+        fi
+    fi
 }
 
 # check_rebuild FIXTURE [files] — the editing API: read the network, build
@@ -330,7 +373,18 @@ for inp in $FIXTURES; do
         check "$inp" stepq
         check_rebuild "$inp"
     fi
+    check_api "$inp"
 done
+
+# the API's own road: networks laid in code (cmd/check)
+"$B/check-api" >"$B/check.txt" 2>&1
+while IFS= read -r line; do
+    case $line in
+    "ok "*) ok "api ${line#ok }" ;;
+    "bad "*) bad "api ${line#bad }" "" "$B/check-api" ;;
+    *) bad "api check" "$line" "$B/check-api" ;;
+    esac
+done <"$B/check.txt"
 
 
 tally "epanet-odin"
