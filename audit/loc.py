@@ -62,7 +62,7 @@ NOTES = {
 }
 HARNESS = ["harness/bridge.c", "harness/run.c", "harness/rebuild.c", "harness/dumpnet.c", "harness/test.sh",
            "harness/out.sh", "cmd/dumpnet/main.odin", "cmd/run/main.odin", "cmd/inp/main.odin", "cmd/check/main.odin",
-           "wasm/check.mjs",
+           "wasm/check.mjs", "wasm/epanet.js",
            "audit/audit.sh", "audit/bench.c", "audit/loc.py", "audit/render.py"]
 
 DECISION = {
@@ -70,18 +70,20 @@ DECISION = {
     "odin": re.compile(r"\b(?:if|for|case|when)\b|&&|\|\|"),
     "sh": re.compile(r"\b(?:if|for|while|case|elif)\b|&&|\|\|"),
     "py": re.compile(r"\b(?:if|for|while|elif|and|or)\b"),
+    "js": re.compile(r"\b(?:if|for|while|case)\b|&&|\|\||\?"),
 }
 FUNC = {
     "c": re.compile(r"^[A-Za-z_][\w\s\*]*?\b[A-Za-z_]\w*\s*\([^;]*$"),
     "odin": re.compile(r"^\w+\s*::\s*(?:#\w+\s+)?proc\b"),
     "sh": re.compile(r"^\w+\s*\(\)\s*\{"),
     "py": re.compile(r"^\s*def\s+\w+"),
+    "js": re.compile(r"^\s*(?:(?:export\s+)?(?:async\s+)?function\s+\w+|(?:static\s+)?\w+\s*\([^;]*\)\s*\{)"),
 }
 NOT_FUNC = re.compile(r"^(?:typedef|return|else|struct|union|enum|extern|#)\b")
 
 
 def lang_of(path):
-    return {".c": "c", ".h": "c", ".odin": "odin", ".sh": "sh", ".py": "py"}[os.path.splitext(path)[1]]
+    return {".c": "c", ".h": "c", ".odin": "odin", ".sh": "sh", ".py": "py", ".js": "js", ".mjs": "js"}[os.path.splitext(path)[1]]
 
 
 def strip(line, lang, state):
