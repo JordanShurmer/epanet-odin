@@ -211,7 +211,7 @@ double odin_tankgrade(OdinProject *, int i, double v);
 void odin_getenergy(OdinProject *, int k, double *kw, double *eff);
 void odin_getallpumpsenergy(OdinProject *);
 void odin_addenergy(OdinProject *, long long hstep);
-void *odin_quality_new(int nchains);
+void *odin_quality_new(int nlinks, int ntanks);
 void odin_quality_free(void *segs);
 void odin_initqual(OdinProject *);
 int odin_qual_newhydraulics(OdinProject *);
@@ -1218,7 +1218,7 @@ static int initqual_odin(Project *pr)
     time->Rtime = time->Rstart;
     pr->report.Nperiods = 0;
     if (qualv.segs) odin_quality_free(qualv.segs);
-    qualv.segs = odin_quality_new(net->Nlinks + net->Ntanks);
+    qualv.segs = odin_quality_new(net->Nlinks, net->Ntanks);
     odin_initqual(enter(pr));
     leave(pr);
     return 0;

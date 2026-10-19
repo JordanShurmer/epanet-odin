@@ -99,7 +99,8 @@ Matrix_C :: struct {
 }
 
 // Quality_C: the engine's settings and state as the bridge holds them.
-// segs is the engine's own store, from odin_quality_new.
+// own is what the engine keeps for itself per project, from
+// odin_quality_new (C's void *segs).
 Quality_C :: struct {
 	kind, trace_node, reactive, out_of_memory:          c.int,
 	ctol, diffus, climit:                               f64,
@@ -110,7 +111,15 @@ Quality_C :: struct {
 	wbulk, wwall, wtank, wsource, source_qual:          f64,
 	initial, inflow, outflow, reacted, final, ratio:    f64,
 	seg_count:                                          c.int,
-	segs:                                               ^Segments,
+	own:                                                ^Quality_Own,
+}
+
+// Quality_Own is the quality engine's own state in a bridge project, which
+// C has no struct for and carries as one pointer: the segment store and
+// the period's flow order per link.
+Quality_Own :: struct {
+	segs:     ^Segments,
+	up, down: []i32,
 }
 
 // Report_C is EPANET's Report struct as the bridge shows it, with the
@@ -171,17 +180,15 @@ Project_C :: struct {
 // EPANET's in place, the scalars are copied in and (unview) back out.
 Views :: Project
 
-// The engine keeps a little state with its solvers that the bridge has
+// The engine keeps a little scratch with its solvers that the bridge has
 // no struct for — the rule engine's list of waiting actions, the quality
-// sort's in-degrees and stack, the period's flow per link: one buffer
-// each for the process, grown as a view needs, which persists from one
-// call to the next as the engine's own would.
+// sort's in-degrees and stack — each used up within the call that fills
+// it: one buffer each for the process, grown as a view needs. (What
+// must outlive a call is per project: Quality_Own.)
 @(private = "file")
 pending_buf: []Pending
 @(private = "file")
-indegree_buf, stack_buf, up_buf, down_buf: []i32
-@(private = "file")
-link_q_buf: []f64
+indegree_buf, stack_buf: []i32
 
 view_buffer :: proc(buf: ^[]$T, n: int) -> []T {
 	if len(buf^) < n {
@@ -304,11 +311,10 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 			pipe_rate = q.pipe_rate[:nl + 1], source_mass = q.source_mass[:nn + 1],
 			flow_dir = q.flow_dir[:nl + 1], sorted = q.sorted[:nn + 1],
 			indegree = view_buffer(&indegree_buf, nn + 1), stack = view_buffer(&stack_buf, nn + 1),
-			up = view_buffer(&up_buf, nl + 1), down = view_buffer(&down_buf, nl + 1), link_q = view_buffer(&link_q_buf, nl + 1),
 			wbulk = q.wbulk, wwall = q.wwall, wtank = q.wtank, wsource = q.wsource, source_qual = q.source_qual,
 			balance = {q.initial, q.inflow, q.outflow, q.reacted, q.final, q.ratio, int(q.seg_count)},
-			segs = q.segs,
 		}
+		if q.own != nil do v.q.segs, v.q.up, v.q.down = q.own.segs, q.own.up, q.own.down
 	}
 	if r := p.rpt; r != nil {
 		v.rpt = {
@@ -677,15 +683,22 @@ odin_addenergy :: proc "c" (p: ^Project_C, hstep: i64) {
 // ── water quality ─────────────────────────────────────────────────────
 
 @(export, link_name = "odin_quality_new")
-odin_quality_new :: proc "c" (nchains: c.int) -> ^Segments {
+odin_quality_new :: proc "c" (nlinks, ntanks: c.int) -> ^Quality_Own {
 	context = runtime.default_context()
-	return segments_make(int(nchains))
+	own := new(Quality_Own)
+	own.segs = segments_make(int(nlinks + ntanks))
+	own.up = make([]i32, int(nlinks) + 1)
+	own.down = make([]i32, int(nlinks) + 1)
+	return own
 }
 
 @(export, link_name = "odin_quality_free")
-odin_quality_free :: proc "c" (s: ^Segments) {
+odin_quality_free :: proc "c" (own: ^Quality_Own) {
 	context = runtime.default_context()
-	segments_delete(s)
+	segments_delete(own.segs)
+	delete(own.up)
+	delete(own.down)
+	free(own)
 }
 
 @(export, link_name = "odin_initqual")
@@ -737,7 +750,8 @@ odin_avgqual :: proc "c" (p: ^Project_C, k: c.int) -> f64 {
 
 // odin_segments lists chain k's segments, first to last, for the shadow.
 @(export, link_name = "odin_segments")
-odin_segments :: proc "c" (s: ^Segments, k: c.int, v, cq: [^]f64, max: c.int) -> c.int {
+odin_segments :: proc "c" (own: ^Quality_Own, k: c.int, v, cq: [^]f64, max: c.int) -> c.int {
+	s := own.segs
 	n: c.int = 0
 	for seg := s.first[k]; seg != 0 && n < max; seg = s.at[seg].prev {
 		v[n] = s.at[seg].v

@@ -5,13 +5,15 @@ package epanet
 // asked for more than its shutoff head closes, a pressure valve moves
 // between open, active and closed, a flow control valve gives up when it
 // cannot hold its setting, and a link into a full tank or out of an empty
-// one is shut for this step. A pass over every link a trial: unchecked,
-// as the coefficients are (hydcoeffs.odin).
+// one is shut for this step. A pass over every link a trial, marked
+// #no_bounds_check (network.odin).
 
 // valve_status re-evaluates every PRV and PSV that has a setting. Returns
 // whether any changed.
 valve_status :: proc "contextless" (pr: ^Project) -> bool #no_bounds_check {
 	net, hyd := &pr.net, &pr.hyd
+	t0 := prof_begin()
+	defer prof_end(.valves, t0)
 	change := false
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]
@@ -39,6 +41,8 @@ valve_status :: proc "contextless" (pr: ^Project) -> bool #no_bounds_check {
 // link_status re-evaluates check valves, pumps, FCVs and links at tanks.
 link_status :: proc "contextless" (pr: ^Project) -> bool #no_bounds_check {
 	net, hyd := &pr.net, &pr.hyd
+	t0 := prof_begin()
+	defer prof_end(.status, t0)
 	change := false
 	for k in 1 ..= net.nlinks {
 		n1, n2 := net.n1[k], net.n2[k]
@@ -68,7 +72,7 @@ link_status :: proc "contextless" (pr: ^Project) -> bool #no_bounds_check {
 	return change
 }
 
-cv_status :: proc "contextless" (hyd: ^Hydraulics, s: Status, dh, q: f64) -> Status #no_bounds_check {
+cv_status :: proc "contextless" (hyd: ^Hydraulics, s: Status, dh, q: f64) -> Status {
 	if abs(dh) > hyd.htol {
 		if dh < -hyd.htol do return .CLOSED
 		if q < -hyd.qtol do return .CLOSED

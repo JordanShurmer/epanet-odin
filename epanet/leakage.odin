@@ -9,7 +9,7 @@ package epanet
 //   H = cva·qva^(2/3)   the variable-area part
 // with cfa and cva summed over the node's leaking pipes when the system
 // is opened (still C's job). This file is what happens per trial, a pass
-// over every junction: unchecked, as the coefficients are (hydcoeffs.odin).
+// over every junction, marked #no_bounds_check (network.odin).
 
 import "core:math"
 
@@ -42,7 +42,7 @@ leakage_headloss :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, i: int)
 
 // eval_leak_headloss: hloss = c·q^(1/n) and its gradient, with a barrier
 // that keeps the leak from flowing backwards.
-eval_leak_headloss :: proc "contextless" (q, c, n0: f64) -> (hloss, hgrad: f64) #no_bounds_check {
+eval_leak_headloss :: proc "contextless" (q, c, n0: f64) -> (hloss, hgrad: f64) {
 	n := 1 / n0
 	hgrad = n * c * c_pow(abs(q), n - 1)
 	hloss = hgrad * q / n

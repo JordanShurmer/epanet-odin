@@ -7,7 +7,7 @@ package epanet
 PROF :: false
 
 Prof_Phase :: enum {
-	step, copy_in, demands, headloss_coeffs, matrix_coeffs, linsolve, new_flows, converge, valves, status,
+	step, copy_in, demands, controls, headloss_coeffs, matrix_coeffs, linsolve, new_flows, converge, valves, status,
 	new_hydraulics, copy_out, next_hyd, react, transport, mass_balance,
 }
 

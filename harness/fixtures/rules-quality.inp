@@ -1,0 +1,147 @@
+[TITLE]
+Rules that close a pipe and a pump by the clock and a tank level, under
+a decaying chemical: the quality run sees the links switch between its
+periods (rules-energy.inp with [QUALITY], [SOURCES], [REACTIONS] and a
+rule on a pipe).
+
+[JUNCTIONS]
+;ID   Elev  Demand  Pattern
+J1    700   0
+J2    710   150     P1
+J3    700   200     P1
+J4    695   120     P1
+J5    700   180     P1
+J6    690   100     P1
+J7    700   140     P1
+
+[RESERVOIRS]
+;ID   Head  Pattern
+R1    800   RH
+
+[TANKS]
+;ID   Elev  Init  Min  Max  Diam  MinVol  VolCurve
+T1    830   10    2    25   50    0       VC
+T2    840   8     1    20   40    0
+
+[PIPES]
+;ID   N1   N2   Len   Diam  Rough  MLoss  Status
+P1    J1   J2   2000  14    100    0      Open
+P2    J2   J3   1500  12    100    0      Open
+P3    J3   J4   1500  10    100    0      Open
+P4    J4   J5   1500  10    100    0      Open
+P5    J5   J6   1200  8     100    0      Open
+P6    J6   J7   1200  8     100    0      Open
+P7    J7   J2   2000  10    100    0      Open
+P8    J3   J6   1800  8     100    0      Open
+P9    J5   T1   600   12    100    0      Open
+P10   J7   T2   800   10    100    0      Open
+P11   J4   J7   1600  6     100    0      Closed
+
+[PUMPS]
+;ID   N1   N2   Parameters
+PU1   R1   J1   HEAD C1 SPEED 1.0
+PU2   R1   J3   HEAD C2
+
+[CURVES]
+;pump head
+C1    0     250
+C1    800   220
+C1    1600  150
+C1    2400  40
+C2    1000  120
+;efficiency
+E1    0     20
+E1    600   60
+E1    1200  78
+E1    1800  70
+E1    2400  50
+;tank volume: level above bottom vs volume
+VC    0     0
+VC    5     8000
+VC    10    20000
+VC    15    36000
+VC    20    56000
+VC    25    80000
+
+[PATTERNS]
+P1    0.5  0.5  0.6  0.8  1.0  1.3  1.5  1.4  1.2  1.1  1.0  1.0
+P1    1.0  1.1  1.3  1.5  1.6  1.4  1.1  0.9  0.8  0.7  0.6  0.5
+RH    1.0  1.0  1.0  0.99 0.99 0.98 0.98 0.98 0.99 1.0  1.0  1.0
+RH    1.0  1.01 1.01 1.0  1.0  1.0  0.99 0.99 1.0  1.0  1.0  1.0
+EP    0.5  0.5  0.5  0.5  0.5  0.5  1.0  1.0  1.5  1.5  1.5  1.5
+EP    1.5  1.5  1.5  1.5  1.5  1.0  1.0  1.0  0.5  0.5  0.5  0.5
+
+[ENERGY]
+Global Efficiency  70
+Global Price       0.08
+Global Pattern     EP
+Demand Charge      5
+Pump PU1 Efficiency E1
+Pump PU1 Price     0.10
+Pump PU1 Pattern   EP
+
+[CONTROLS]
+LINK P11 OPEN AT TIME 6
+LINK P11 CLOSED AT CLOCKTIME 2 PM
+LINK PU2 CLOSED IF NODE T2 ABOVE 15
+LINK PU2 OPEN IF NODE T2 BELOW 5
+
+[RULES]
+RULE 1
+IF TANK T1 LEVEL ABOVE 20
+THEN PUMP PU1 STATUS IS CLOSED
+
+RULE 2
+IF TANK T1 LEVEL BELOW 6
+THEN PUMP PU1 STATUS IS OPEN
+
+RULE 3
+IF SYSTEM CLOCKTIME >= 7:00 AM
+AND SYSTEM CLOCKTIME < 9:00 AM
+AND TANK T1 LEVEL BELOW 18
+THEN PUMP PU1 SETTING IS 1.1
+ELSE PUMP PU1 SETTING IS 1.0
+
+RULE 4
+IF SYSTEM CLOCKTIME >= 10:00 AM
+AND SYSTEM CLOCKTIME < 4:00 PM
+THEN PIPE P8 STATUS IS CLOSED
+ELSE PIPE P8 STATUS IS OPEN
+
+[QUALITY]
+R1    1.0
+T1    0.5
+T2    0.5
+
+[SOURCES]
+R1    CONCEN  1.0
+
+[REACTIONS]
+Global Bulk  -0.5
+Global Wall  -1
+
+[OPTIONS]
+Units      GPM
+Headloss   H-W
+Trials     80
+Accuracy   0.001
+Unbalanced Continue 10
+Quality    Chlorine mg/L
+
+[TIMES]
+Duration            48:00
+Hydraulic Timestep  1:00
+Pattern Timestep    1:00
+Rule Timestep       0:06
+Quality Timestep    0:05
+Report Timestep     1:00
+Start ClockTime     6 AM
+
+[REPORT]
+PAGE      40
+STATUS    FULL
+ENERGY    YES
+NODES     ALL
+LINKS     ALL
+
+[END]

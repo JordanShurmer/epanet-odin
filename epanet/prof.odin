@@ -20,13 +20,14 @@ PROF :: #config(PROF, false)
 Prof_Phase :: enum {
 	step,
 	copy_in,
-	demands, // the period's demands and the simple controls
+	demands, // the period's demands
+	controls, // the simple controls
 	headloss_coeffs,
 	matrix_coeffs,
 	linsolve,
 	new_flows,
-	converge, // has_converged: the head-loss balance, leakage and PDA checks
-	valves, // the damping and valve_status, every trial
+	converge, // has_converged: the head-loss balance (a second headloss_coeffs pass), leakage and PDA checks
+	valves, // valve_status: the PRVs and PSVs, when the damping allows a check
 	status, // link_status and pswitch, once converged or every check_freq trials
 	new_hydraulics, // quality: wall rates, flow directions, the sort
 	copy_out,

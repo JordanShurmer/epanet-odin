@@ -26,11 +26,20 @@ import "core:time"
 
 import "../../epanet"
 
+// Counts is what passed through a Counting allocator.
+Counts :: struct {
+	allocs, frees, resizes: int,
+	bytes:                  int, // asked for, net of resizes
+}
+
 // Counting is an allocator that counts what passes through to another.
 Counting :: struct {
-	backing:                 runtime.Allocator,
-	allocs, frees, resizes:  int,
-	bytes:                   int, // asked for, net of resizes
+	using counts: Counts,
+	backing:      runtime.Allocator,
+}
+
+counts_since :: proc(now, then: Counts) -> Counts {
+	return {now.allocs - then.allocs, now.frees - then.frees, now.resizes - then.resizes, now.bytes - then.bytes}
 }
 
 counting_allocator :: proc(c: ^Counting) -> runtime.Allocator {
@@ -63,7 +72,7 @@ Run :: struct {
 	nchem:                       int,
 	arena_used, arena_reserved:  uint,
 	arena_after_build:           uint,
-	sim_allocs, temp_allocs:     Counting, // during the steps
+	sim_allocs, temp_allocs:     Counts, // during the steps
 }
 
 Step_Line :: struct {
@@ -194,7 +203,7 @@ one_run :: proc(path: string, sim_count, temp_count: ^Counting, lines: ^[dynamic
 		r.njuncs = sim.engine.net.njuncs
 		r.arena_after_build = sim.engine.arena.total_used
 	}
-	before_sim, before_temp := sim_count^, temp_count^
+	before_sim, before_temp := sim_count.counts, temp_count.counts
 	r.steps = 1
 	r.trials = trials_of(&sim)
 	r.max_trials = r.trials
@@ -215,8 +224,8 @@ one_run :: proc(path: string, sim_count, temp_count: ^Counting, lines: ^[dynamic
 		if dt == 0 do break
 	}
 	r.steps_ns = i64(time.tick_since(t0))
-	r.sim_allocs = {allocs = sim_count.allocs - before_sim.allocs, frees = sim_count.frees - before_sim.frees, resizes = sim_count.resizes - before_sim.resizes, bytes = sim_count.bytes - before_sim.bytes}
-	r.temp_allocs = {allocs = temp_count.allocs - before_temp.allocs, frees = temp_count.frees - before_temp.frees, resizes = temp_count.resizes - before_temp.resizes, bytes = temp_count.bytes - before_temp.bytes}
+	r.sim_allocs = counts_since(sim_count.counts, before_sim)
+	r.temp_allocs = counts_since(temp_count.counts, before_temp)
 	if sim.engine != nil {
 		r.arena_used = sim.engine.arena.total_used
 		r.arena_reserved = sim.engine.arena.total_reserved

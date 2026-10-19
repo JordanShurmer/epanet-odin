@@ -9,8 +9,8 @@ package epanet
 //   3. fill-in: the extra nonzeros elimination creates, added as links
 //   4. the column structure (xlnz, nzsub, lnz), rows sorted
 //
-// The passes over the adjacency run without bounds checks: an entry
-// comes from adj_push, a node or link from the graph.
+// The passes over the adjacency are marked #no_bounds_check: an entry
+// comes from adj_push, a node or link from the graph (network.odin).
 
 // Graph is a network's links as node pairs. Nodes are 1..nnodes with the
 // junctions first (1..njuncs; tanks and reservoirs after, and those are

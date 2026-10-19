@@ -5,8 +5,9 @@ package epanet
 // equations from the current flows, solves for the heads, corrects the
 // flows, and asks the status checks whether anything switched; it ends
 // when the flow corrections are small and nothing switched, or when the
-// trials run out. The per-link and per-junction passes run without
-// bounds checks, as the coefficients do (hydcoeffs.odin).
+// trials run out. The per-link and per-junction passes are marked
+// #no_bounds_check (network.odin). A proc takes the project when it, or
+// what it calls, writes to the report; the rest take the arrays.
 
 
 // Balance is the worst remaining error after a trial and where it is.
@@ -18,9 +19,9 @@ Balance :: struct {
 	max_flow_link:   int,
 }
 
-// hydsolve returns the trials taken, the convergence error and 0 or 110
-// (the matrix went ill-conditioned), and leaves the rest of what it
-// found in hyd.
+// hydsolve returns the trials taken, the convergence error and 0 or
+// Unsolvable (110: the matrix went ill-conditioned), and leaves the rest
+// of what it found in hyd.
 hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcode: int) {
 	net, hyd, m := &pr.net, &pr.hyd, &pr.m
 	next_check := hyd.check_freq
@@ -34,16 +35,13 @@ hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcod
 	if hyd.extra_iter > 0 do max_trials += hyd.extra_iter
 	iter = 1
 	for iter <= max_trials {
-		// A·H = F for the heads; H comes back in f.
+		// A·H = F for the heads; H comes back in f. (headloss_coeffs is
+		// timed here, not in itself: check_hyd_balance runs it again.)
 		t0 := prof_begin()
 		headloss_coeffs(net, hyd)
 		prof_end(.headloss_coeffs, t0)
-		t0 = prof_begin()
 		matrix_coeffs(net, hyd, m)
-		prof_end(.matrix_coeffs, t0)
-		t0 = prof_begin()
 		errcode = linsolve(m, net.njuncs)
-		prof_end(.linsolve, t0)
 
 		// Ill-conditioned: a control valve at that row is fixed and we
 		// go round again; anything else ends it with no solution.
@@ -52,14 +50,11 @@ hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcod
 			break
 		}
 
-		t0 = prof_begin()
 		for i in 1 ..= net.njuncs do hyd.head[i] = m.f[m.row[i]]
 		relerr = new_flows(net, hyd, &bal)
-		prof_end(.new_flows, t0)
 		if hyd.status_report do writerelerr(pr, iter, relerr)
 
 		// Damping and the valve checks.
-		t0 = prof_begin()
 		hyd.relax = 1
 		valve_change := false
 		if hyd.damp_limit > 0 {
@@ -71,13 +66,7 @@ hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcod
 			valve_change = valve_status(pr)
 		}
 
-		prof_end(.valves, t0)
-
-		t0 = prof_begin()
-		converged := has_converged(pr, relerr, &bal)
-		prof_end(.converge, t0)
-		t0 = prof_begin()
-		if converged {
+		if has_converged(pr, relerr, &bal) {
 			if iter > hyd.max_iter do break
 			stat_change := valve_change
 			if link_status(pr) do stat_change = true
@@ -88,7 +77,6 @@ hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcod
 			link_status(pr)
 			next_check += hyd.check_freq
 		}
-		prof_end(.status, t0)
 		iter += 1
 	}
 
@@ -136,6 +124,8 @@ bad_valve :: proc "contextless" (pr: ^Project, n: int) -> bool {
 // once a solution is in hand. Returns whether any link changed.
 pswitch :: proc "contextless" (pr: ^Project) -> bool {
 	net, hyd := &pr.net, &pr.hyd
+	t0 := prof_begin()
+	defer prof_end(.status, t0)
 	anychange := false
 	for i in 1 ..= net.ncontrols {
 		k := net.control_link[i]
@@ -176,7 +166,9 @@ pswitch :: proc "contextless" (pr: ^Project) -> bool {
 
 // new_flows corrects every flow from the new heads and returns the
 // relative flow change (or the absolute one when the total flow is tiny).
-new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance) -> f64 #no_bounds_check {
+new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance) -> f64 {
+	t0 := prof_begin()
+	defer prof_end(.new_flows, t0)
 	qsum, dqsum := 0.0, 0.0
 	bal.max_flow_change = 0
 	bal.max_flow_link = 1
@@ -301,6 +293,8 @@ check_hyd_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^
 
 has_converged :: proc "contextless" (pr: ^Project, relerr: f64, bal: ^Balance) -> bool {
 	net, hyd := &pr.net, &pr.hyd
+	t0 := prof_begin()
+	defer prof_end(.converge, t0)
 	if relerr > hyd.hacc do return false
 	check_hyd_balance(net, hyd, bal)
 	if hyd.status_report {

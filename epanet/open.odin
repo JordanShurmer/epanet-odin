@@ -48,7 +48,8 @@ free_adjlists :: proc(net: ^Network) {
 	net.adj_first, net.adj_link, net.adj_node = nil, nil, nil
 }
 
-// unlinked names up to ten junctions no link reaches; 233 when any.
+// unlinked names up to ten junctions no link reaches; Unconnected_Nodes
+// (233) when any.
 unlinked :: proc(p: ^Project) -> int {
 	net := &p.net
 	count := 0
@@ -227,7 +228,6 @@ alloc_qual :: proc(net: ^Network, q: ^Quality) {
 	q.flow_dir = make([]i32, nl + 1)
 	q.up = make([]i32, nl + 1)
 	q.down = make([]i32, nl + 1)
-	q.link_q = make([]f64, nl + 1)
 	q.pipe_rate = make([]f64, nl + 1)
 	q.link_rc = make([]f64, nl + 1)
 	q.sorted = make([]i32, nn + 1)
@@ -240,9 +240,9 @@ alloc_qual :: proc(net: ^Network, q: ^Quality) {
 close_qual :: proc(p: ^Project) {
 	q := &p.q
 	delete(q.flow_dir); delete(q.pipe_rate); delete(q.link_rc); delete(q.sorted); delete(q.source_mass)
-	delete(q.indegree); delete(q.stack); delete(q.up); delete(q.down); delete(q.link_q)
+	delete(q.indegree); delete(q.stack); delete(q.up); delete(q.down)
 	q.flow_dir, q.pipe_rate, q.link_rc, q.sorted, q.source_mass = nil, nil, nil, nil, nil
-	q.indegree, q.stack, q.up, q.down, q.link_q = nil, nil, nil, nil, nil
+	q.indegree, q.stack, q.up, q.down = nil, nil, nil, nil
 	if q.segs != nil do segments_delete(q.segs)
 	q.segs = nil
 }

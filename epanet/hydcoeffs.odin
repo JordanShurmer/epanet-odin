@@ -8,10 +8,7 @@ package epanet
 // right-hand side F of Todini's gradient method are assembled from them,
 // the emitters, the pressure-dependent demands and the control valves
 // (matrix_coeffs). The arithmetic is EPANET's, operation for operation.
-//
-// Every proc here runs once a link or node a trial over the engine's
-// own indexes (n1, n2, row, ndx from the project and create_sparse), so
-// it runs without bounds checks, as linsolve does.
+// Every proc that indexes is marked #no_bounds_check (network.odin).
 
 import "core:math"
 
@@ -71,6 +68,8 @@ headloss_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) #no_boun
 
 // matrix_coeffs assembles A and F.
 matrix_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, m: ^Smatrix) #no_bounds_check {
+	t0 := prof_begin()
+	defer prof_end(.matrix_coeffs, t0)
 	for i in 0 ..= net.nnodes {
 		m.aii[i] = 0
 		m.f[i] = 0

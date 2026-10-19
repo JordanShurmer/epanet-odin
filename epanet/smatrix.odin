@@ -42,6 +42,8 @@ Smatrix :: struct {
 // bridge): every entry is in range by construction, and this is the
 // engine's hottest loop, so it runs without the bounds checks.
 linsolve :: proc "contextless" (m: ^Smatrix, n: int) -> int #no_bounds_check {
+	t0 := prof_begin()
+	defer prof_end(.linsolve, t0)
 	aii, aij, b, temp := m.aii, m.aij, m.f, m.temp
 	xlnz, nzsub, lnz, link, first := m.xlnz, m.nzsub, m.lnz, m.link, m.first
 

@@ -10,10 +10,9 @@ package epanet
 // — with a free list through the same prev field. The chains and every
 // operation on them are EPANET's, so the numbers come out the same.
 //
-// Transport and what it calls run without bounds checks: a slot comes
-// from the store's own first, last and prev, kept by add_seg and
-// recycle_seg below, a node or link from the project's adjacency, and
-// the walks are most of a quality step.
+// The per-link and per-segment passes are marked #no_bounds_check: a
+// slot comes from the store's own first, last and prev, kept by add_seg
+// and recycle_seg, a node or link from the adjacency (network.odin).
 
 
 // Mass_Balance is the running account of a constituent.
@@ -55,8 +54,7 @@ Quality :: struct {
 	link_rc:                                   []f64, // wall reaction coefficient per pipe
 	pipe_rate:                                 []f64, // average reaction rate per pipe
 	flow_dir:                                  []i32, // −1, 0, +1 per link
-	up, down:                                  []i32, // the node each link flows from and to this period (its ends as written when it stands still)
-	link_q:                                    []f64, // each link's flow this period, unsigned; a closed link's is 0
+	up, down:                                  []i32, // the node each link flowed from and to when new_hydraulics looked (its ends as written when it stood still)
 	sorted:                                    []i32, // nodes, upstream first
 	indegree, stack:                           []i32, // sort_nodes's scratch
 	source_mass:                               []f64, // mass each source has added
@@ -222,6 +220,8 @@ getucf :: proc "contextless" (order0: f64) -> f64 {
 // flow did), and, when a direction changed, the nodes re-sorted. Returns
 // 0 or the sort's error code.
 new_hydraulics :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality) -> int {
+	t0 := prof_begin()
+	defer prof_end(.new_hydraulics, t0)
 	if q.reactive && q.kind != .AGE do rate_coeffs(net, hyd, q)
 	if flow_dir_changed(net, hyd, q) do return sort_nodes(net, q)
 	return 0
@@ -239,9 +239,11 @@ rate_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality)
 	}
 }
 
-// flow_dir_changed notes every link's flow for the period — its
-// direction, its ends in flow order, its rate — turning the segments of
-// a link whose flow reversed. Returns whether any direction changed.
+// flow_dir_changed notes every link's direction for the period and its
+// ends in flow order, turning the segments of a link whose flow
+// reversed. Returns whether any direction changed. (The flow itself is
+// read again at transport, as EPANET reads it: a link a rule switched
+// between the two is seen switched.)
 flow_dir_changed :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality) -> bool #no_bounds_check {
 	result := false
 	for k in 1 ..= net.nlinks {
@@ -254,14 +256,13 @@ flow_dir_changed :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Qua
 		q.flow_dir[k] = newdir
 		q.up[k], q.down[k] = net.n1[k], net.n2[k]
 		if newdir < 0 do q.up[k], q.down[k] = net.n2[k], net.n1[k]
-		q.link_q[k] = abs(flow)
 	}
 	return result
 }
 
 // sort_nodes orders the nodes upstream to downstream (links with no flow
-// ignored, since they make false cycles). Returns 0, or 120 when the
-// sort could not finish.
+// ignored, since they make false cycles). Returns 0, or
+// Quality_Unsolvable (120) when the sort could not finish.
 sort_nodes :: proc(net: ^Network, q: ^Quality) -> int {
 	indegree, stack := q.indegree, q.stack
 	for i in 0 ..= net.nnodes do indegree[i] = 0
@@ -269,16 +270,8 @@ sort_nodes :: proc(net: ^Network, q: ^Quality) -> int {
 	numsorted := 0
 
 	for k in 1 ..= net.nlinks {
-		n: i32
-		switch q.flow_dir[k] {
-		case 1:
-			n = net.n2[k]
-		case -1:
-			n = net.n1[k]
-		case:
-			continue
-		}
-		indegree[n] += 1
+		if q.flow_dir[k] == 0 do continue
+		indegree[q.down[k]] += 1
 	}
 	for i in 1 ..= net.nnodes {
 		if indegree[i] == 0 {
@@ -302,8 +295,7 @@ sort_nodes :: proc(net: ^Network, q: ^Quality) -> int {
 		for a in net.adj_first[i] ..< net.adj_first[i + 1] {
 			k := net.adj_link[a]
 			if q.flow_dir[k] == 0 do continue
-			n := net.n2[k]
-			if q.flow_dir[k] < 0 do n = net.n1[k]
+			n := q.down[k]
 			if n != i && indegree[n] > 0 {
 				indegree[n] -= 1
 				if indegree[n] == 0 {
@@ -349,9 +341,9 @@ transport :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, tstep
 		for a in net.adj_first[n] ..< net.adj_first[n + 1] {
 			k := int(net.adj_link[a])
 			if int(q.down[k]) == n {
-				eval_node_inflow(q, k, tstep, &volin, &massin)
+				eval_node_inflow(hyd, q, k, tstep, &volin, &massin)
 			} else {
-				volout += q.link_q[k]
+				volout += abs(link_flow(hyd, k))
 			}
 		}
 		if net.node_type[n] == .JUNCTION do volout += max(0, hyd.node_demand[n])
@@ -359,7 +351,7 @@ transport :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, tstep
 		nodequal := find_node_qual(net, hyd, t, q, n, volin, massin, volout, tstep)
 		for a in net.adj_first[n] ..< net.adj_first[n + 1] {
 			k := int(net.adj_link[a])
-			if int(q.up[k]) == n do eval_node_outflow(q, k, nodequal, tstep)
+			if int(q.up[k]) == n do eval_node_outflow(hyd, q, k, nodequal, tstep)
 		}
 		update_mass_balance(net, hyd, q, n, massin, volout, tstep)
 	}
@@ -367,9 +359,9 @@ transport :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, tstep
 
 // eval_node_inflow takes a link's flow volume over the step from its
 // leading segments into its downstream node.
-eval_node_inflow :: proc "contextless" (q: ^Quality, k: int, tstep: i64, volin, massin: ^f64) #no_bounds_check {
+eval_node_inflow :: proc "contextless" (hyd: ^Hydraulics, q: ^Quality, k: int, tstep: i64, volin, massin: ^f64) #no_bounds_check {
 	s := q.segs
-	v := q.link_q[k] * f64(tstep)
+	v := abs(link_flow(hyd, k)) * f64(tstep)
 	for v > 0 {
 		i := s.first[k]
 		if i == 0 do break
@@ -456,9 +448,9 @@ no_flow_qual :: proc "contextless" (net: ^Network, q: ^Quality, n: int) -> f64 #
 
 // eval_node_outflow releases the step's flow volume at quality c into
 // the upstream end of link k, merging with the last segment when close.
-eval_node_outflow :: proc(q: ^Quality, k: int, c: f64, tstep: i64) #no_bounds_check {
+eval_node_outflow :: proc(hyd: ^Hydraulics, q: ^Quality, k: int, c: f64, tstep: i64) #no_bounds_check {
 	s := q.segs
-	v := q.link_q[k] * f64(tstep)
+	v := abs(link_flow(hyd, k)) * f64(tstep)
 	if v == 0 do return
 	if s.last[k] != 0 {
 		seg := &s.at[s.last[k]]
@@ -625,7 +617,7 @@ pipe_react :: proc "contextless" (net: ^Network, q: ^Quality, t: ^Times, k: int,
 	return max(0, c + dc)
 }
 
-tank_react :: proc "contextless" (q: ^Quality, t: ^Times, c, v, kb: f64, dt: i64) -> f64 #no_bounds_check {
+tank_react :: proc "contextless" (q: ^Quality, t: ^Times, c, v, kb: f64, dt: i64) -> f64 {
 	dc: f64
 	if q.kind == .AGE {
 		dc = f64(dt) / 3600
@@ -639,7 +631,7 @@ tank_react :: proc "contextless" (q: ^Quality, t: ^Times, c, v, kb: f64, dt: i64
 
 // bulk_rate: kb times the reaction potential at concentration c for the
 // given order (0, Michaelis-Menten below 0, or n-th order).
-bulk_rate :: proc "contextless" (q: ^Quality, c0, kb, order: f64) -> f64 #no_bounds_check {
+bulk_rate :: proc "contextless" (q: ^Quality, c0, kb, order: f64) -> f64 {
 	c := c0
 	if order == 0 {
 		c = 1
@@ -666,7 +658,7 @@ bulk_rate :: proc "contextless" (q: ^Quality, c0, kb, order: f64) -> f64 #no_bou
 	return kb * c
 }
 
-wall_rate :: proc "contextless" (net: ^Network, q: ^Quality, c, d, kw0, kf0: f64) -> f64 #no_bounds_check {
+wall_rate :: proc "contextless" (net: ^Network, q: ^Quality, c, d, kw0, kf0: f64) -> f64 {
 	kw, kf := kw0, kf0
 	if kw == 0 || d == 0 do return 0
 	if q.wall_order == 0 {
@@ -860,6 +852,8 @@ avg_qual :: proc "contextless" (net: ^Network, q: ^Quality, k: int) -> f64 #no_b
 // eval_mass_balance closes the account: what is stored now against what
 // came in, went out and reacted.
 eval_mass_balance :: proc "contextless" (net: ^Network, q: ^Quality) {
+	t0 := prof_begin()
+	defer prof_end(.mass_balance, t0)
 	if q.kind == .NONE {
 		q.balance.ratio = 1
 		return

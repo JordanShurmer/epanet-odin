@@ -39,7 +39,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
     callgrind | memcheck) MODE=$1 ;;
     save) SAVE_AS=${2:-}; [ -n "$SAVE_AS" ] || usage "save needs a name"; shift ;;
-    diff) DIFF_A=${2:-}; DIFF_B=${3:-}; [ -n "$DIFF_A" ] || usage "diff needs a name"; shift $(($# - 1)) ;;
+    diff) DIFF_A=${2:-}; DIFF_B=${3:-}; [ -n "$DIFF_A" ] || usage "diff needs a name"; break ;;
     *) usage "unknown argument: $1" ;;
     esac
     shift

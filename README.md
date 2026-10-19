@@ -172,7 +172,9 @@ turbulent flow, emitters, pressure-driven demand, a pump speed pattern) and
 `cm-leakage.inp` (Chezy-Manning, leaking pipes, emitter backflow) and
 `rules-energy.inp` (rules on a tank and the clock, a volume curve, an
 efficiency curve with energy prices and patterns, a reservoir head pattern,
-timer and clock-time controls), `quality-mix.inp` (second-order bulk and
+timer and clock-time controls), `rules-quality.inp` (the same under a
+decaying chemical, with a rule closing a pipe: the quality run sees links
+switch between its periods), `quality-mix.inp` (second-order bulk and
 zero-order wall decay to a limiting potential, every tank mixing model,
 every booster source type) and `quality-age.inp` (water age). Add your own
 networks with `EXTRA_FIXTURES="…"`, or run only some with `FIXTURES="…"`.
@@ -484,10 +486,12 @@ EPANET's, and the harness says so):
   in the per-trial passes over the links and junctions (the
   coefficients, the flow corrections, the status checks, the copies in
   and out) and in what transport calls: they run unchecked now too, over
-  the engine's own indexes, like the solver. And transport asked each
-  link its flow and direction on every visit from every node; the period's
-  flow per link is noted once (`up`, `down`, `link_q`), which also reads
-  better.
+  the engine's own indexes, like the solver (the policy is one paragraph
+  in `network.odin`). And transport worked out each link's flow order on
+  every visit from every node; it is noted once a period (`up`, `down`),
+  which also reads better. The flow itself is still read at transport
+  time, as EPANET reads it: a rule that switches a link between the two
+  is seen, and `rules-quality.inp` pins that.
 
 Against the first measurement, on the 1,600-junction grid a step is
 30 % faster and the engine opens twice as fast; on Net3 a step is a

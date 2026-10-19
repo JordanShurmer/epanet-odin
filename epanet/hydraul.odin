@@ -165,6 +165,8 @@ set_link_setting :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int,
 // patterns, a reservoir's head from its pattern, and a pump's speed from
 // its utilization pattern.
 demands :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times) {
+	t0 := prof_begin()
+	defer prof_end(.demands, t0)
 	p := (t.htime + t.pstart) / t.pstep // elapsed pattern periods
 	hyd.dsystem = 0
 	for i in 1 ..= net.njuncs {
@@ -199,6 +201,8 @@ demands :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times) {
 // clock. Returns how many links changed.
 controls :: proc "contextless" (pr: ^Project) -> int {
 	net, hyd, t := &pr.net, &pr.hyd, &pr.times
+	t0 := prof_begin()
+	defer prof_end(.controls, t0)
 	setsum := 0
 	for i in 1 ..= net.ncontrols {
 		if !net.control_enabled[i] do continue
@@ -612,10 +616,8 @@ init_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, init
 run_hyd :: proc "contextless" (pr: ^Project) -> (now: i64, errcode: int) {
 	net, hyd, t := &pr.net, &pr.hyd, &pr.times
 	now = t.htime
-	t0 := prof_begin()
 	demands(net, hyd, t)
 	controls(pr)
-	prof_end(.demands, t0)
 	iter, relerr, err := hydsolve(pr)
 	errcode = err
 	if errcode == 0 {
@@ -631,6 +633,8 @@ run_hyd :: proc "contextless" (pr: ^Project) -> (now: i64, errcode: int) {
 // advanced; at the end of the run the flow balance is closed.
 next_hyd :: proc(pr: ^Project) -> (tstep: i64, errcode: int) {
 	net, hyd, t := &pr.net, &pr.hyd, &pr.times
+	t0 := prof_begin()
+	defer prof_end(.next_hyd, t0)
 	get_all_pumps_energy(net, hyd)
 	if hyd.saveflag do errcode = savehyd(pr, t.htime)
 	if hyd.haltflag do t.htime = t.dur
