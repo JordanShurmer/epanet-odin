@@ -10,9 +10,10 @@ package epanet
 // — with a free list through the same prev field. The chains and every
 // operation on them are EPANET's, so the numbers come out the same.
 //
-// The procs that walk a chain run without bounds checks: a slot comes
+// Transport and what it calls run without bounds checks: a slot comes
 // from the store's own first, last and prev, kept by add_seg and
-// recycle_seg below, and the walks are most of a quality step.
+// recycle_seg below, a node or link from the project's adjacency, and
+// the walks are most of a quality step.
 
 
 // Mass_Balance is the running account of a constituent.
@@ -54,6 +55,8 @@ Quality :: struct {
 	link_rc:                                   []f64, // wall reaction coefficient per pipe
 	pipe_rate:                                 []f64, // average reaction rate per pipe
 	flow_dir:                                  []i32, // −1, 0, +1 per link
+	up, down:                                  []i32, // the node each link flows from and to this period (its ends as written when it stands still)
+	link_q:                                    []f64, // each link's flow this period, unsigned; a closed link's is 0
 	sorted:                                    []i32, // nodes, upstream first
 	indegree, stack:                           []i32, // sort_nodes's scratch
 	source_mass:                               []f64, // mass each source has added
@@ -94,7 +97,7 @@ segments_reset :: proc(s: ^Segments) {
 
 // add_seg puts a segment of volume v and quality c at the upstream end
 // of chain k.
-add_seg :: proc(q: ^Quality, k: int, v, c: f64) {
+add_seg :: proc(q: ^Quality, k: int, v, c: f64) #no_bounds_check {
 	s := q.segs
 	seg: i32
 	if s.free != 0 {
@@ -112,13 +115,13 @@ add_seg :: proc(q: ^Quality, k: int, v, c: f64) {
 }
 
 // recycle_seg hands a used-up segment to the free list.
-recycle_seg :: #force_inline proc "contextless" (s: ^Segments, seg: i32) {
+recycle_seg :: #force_inline proc "contextless" (s: ^Segments, seg: i32) #no_bounds_check {
 	s.at[seg].prev = s.free
 	s.free = seg
 }
 
 // reverse_segs turns chain k around, when its flow does.
-reverse_segs :: proc "contextless" (s: ^Segments, k: int) {
+reverse_segs :: proc "contextless" (s: ^Segments, k: int) #no_bounds_check {
 	seg := s.first[k]
 	s.first[k] = s.last[k]
 	s.last[k] = seg
@@ -164,7 +167,7 @@ link_vol :: #force_inline proc "contextless" (net: ^Network, k: int) -> f64 {
 }
 
 // link_flow: a closed link's flow counts as none.
-link_flow :: #force_inline proc "contextless" (hyd: ^Hydraulics, k: int) -> f64 {
+link_flow :: #force_inline proc "contextless" (hyd: ^Hydraulics, k: int) -> f64 #no_bounds_check {
 	return hyd.status[k] <= .CLOSED ? 0 : hyd.flow[k]
 }
 
@@ -226,7 +229,7 @@ new_hydraulics :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality) -> int {
 
 // rate_coeffs: each pipe's effective wall reaction coefficient at the
 // current flow.
-rate_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality) {
+rate_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality) #no_bounds_check {
 	sc3 := c_pow(q.sc, 0.333) // the same for every pipe
 	for k in 1 ..= net.nlinks {
 		kw := net.link_kw[k]
@@ -236,7 +239,10 @@ rate_coeffs :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality)
 	}
 }
 
-flow_dir_changed :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality) -> bool {
+// flow_dir_changed notes every link's flow for the period — its
+// direction, its ends in flow order, its rate — turning the segments of
+// a link whose flow reversed. Returns whether any direction changed.
+flow_dir_changed :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality) -> bool #no_bounds_check {
 	result := false
 	for k in 1 ..= net.nlinks {
 		olddir := q.flow_dir[k]
@@ -246,6 +252,9 @@ flow_dir_changed :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Qua
 		if newdir * olddir < 0 do reverse_segs(q.segs, k)
 		if newdir != olddir do result = true
 		q.flow_dir[k] = newdir
+		q.up[k], q.down[k] = net.n1[k], net.n2[k]
+		if newdir < 0 do q.up[k], q.down[k] = net.n2[k], net.n1[k]
+		q.link_q[k] = abs(flow)
 	}
 	return result
 }
@@ -339,12 +348,10 @@ transport :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, tstep
 		volin, massin, volout := 0.0, 0.0, 0.0
 		for a in net.adj_first[n] ..< net.adj_first[n + 1] {
 			k := int(net.adj_link[a])
-			m := net.n2[k]
-			if q.flow_dir[k] < 0 do m = net.n1[k]
-			if int(m) == n {
-				eval_node_inflow(hyd, q, k, tstep, &volin, &massin)
+			if int(q.down[k]) == n {
+				eval_node_inflow(q, k, tstep, &volin, &massin)
 			} else {
-				volout += abs(link_flow(hyd, k))
+				volout += q.link_q[k]
 			}
 		}
 		if net.node_type[n] == .JUNCTION do volout += max(0, hyd.node_demand[n])
@@ -352,9 +359,7 @@ transport :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, tstep
 		nodequal := find_node_qual(net, hyd, t, q, n, volin, massin, volout, tstep)
 		for a in net.adj_first[n] ..< net.adj_first[n + 1] {
 			k := int(net.adj_link[a])
-			m := net.n1[k]
-			if q.flow_dir[k] < 0 do m = net.n2[k]
-			if int(m) == n do eval_node_outflow(hyd, q, k, nodequal, tstep)
+			if int(q.up[k]) == n do eval_node_outflow(q, k, nodequal, tstep)
 		}
 		update_mass_balance(net, hyd, q, n, massin, volout, tstep)
 	}
@@ -362,9 +367,9 @@ transport :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, tstep
 
 // eval_node_inflow takes a link's flow volume over the step from its
 // leading segments into its downstream node.
-eval_node_inflow :: proc "contextless" (hyd: ^Hydraulics, q: ^Quality, k: int, tstep: i64, volin, massin: ^f64) #no_bounds_check {
+eval_node_inflow :: proc "contextless" (q: ^Quality, k: int, tstep: i64, volin, massin: ^f64) #no_bounds_check {
 	s := q.segs
-	v := abs(link_flow(hyd, k)) * f64(tstep)
+	v := q.link_q[k] * f64(tstep)
 	for v > 0 {
 		i := s.first[k]
 		if i == 0 do break
@@ -386,7 +391,7 @@ eval_node_inflow :: proc "contextless" (hyd: ^Hydraulics, q: ^Quality, k: int, t
 
 // find_node_qual: the quality leaving node n, from what came in, any
 // source, and for a tank its mixing model.
-find_node_qual :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, n: int, volin0, massin, volout: f64, tstep: i64) -> f64 {
+find_node_qual :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, n: int, volin0, massin, volout: f64, tstep: i64) -> f64 #no_bounds_check {
 	volin := volin0
 	switch net.node_type[n] {
 	case .JUNCTION:
@@ -430,19 +435,13 @@ find_node_qual :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, 
 
 // no_flow_qual: a junction with no inflow takes the average of the
 // nearest segments of its links (a reactive constituent only).
-no_flow_qual :: proc "contextless" (net: ^Network, q: ^Quality, n: int) -> f64 {
+no_flow_qual :: proc "contextless" (net: ^Network, q: ^Quality, n: int) -> f64 #no_bounds_check {
 	s := q.segs
 	c := 0.0
 	kount := 0
 	for a in net.adj_first[n] ..< net.adj_first[n + 1] {
 		k := net.adj_link[a]
-		dir := q.flow_dir[k]
-		inflow := false
-		if int(net.n2[k]) == n && dir >= 0 {
-			inflow = true
-		} else if int(net.n1[k]) == n && dir < 0 {
-			inflow = true
-		}
+		inflow := int(q.down[k]) == n
 		if inflow && s.first[k] != 0 {
 			c += s.at[s.first[k]].c
 			kount += 1
@@ -457,9 +456,9 @@ no_flow_qual :: proc "contextless" (net: ^Network, q: ^Quality, n: int) -> f64 {
 
 // eval_node_outflow releases the step's flow volume at quality c into
 // the upstream end of link k, merging with the last segment when close.
-eval_node_outflow :: proc(hyd: ^Hydraulics, q: ^Quality, k: int, c: f64, tstep: i64) #no_bounds_check {
+eval_node_outflow :: proc(q: ^Quality, k: int, c: f64, tstep: i64) #no_bounds_check {
 	s := q.segs
-	v := abs(link_flow(hyd, k)) * f64(tstep)
+	v := q.link_q[k] * f64(tstep)
 	if v == 0 do return
 	if s.last[k] != 0 {
 		seg := &s.at[s.last[k]]
@@ -472,7 +471,7 @@ eval_node_outflow :: proc(hyd: ^Hydraulics, q: ^Quality, k: int, c: f64, tstep: 
 	add_seg(q, k, v, c)
 }
 
-update_mass_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality, n: int, massin, volout: f64, tstep: i64) {
+update_mass_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality, n: int, massin, volout: f64, tstep: i64) #no_bounds_check {
 	masslost, massadded := 0.0, 0.0
 	switch net.node_type[n] {
 	case .JUNCTION:
@@ -496,7 +495,7 @@ update_mass_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^
 
 // find_source_qual: the concentration a node's external source adds to
 // its outflow over the step.
-find_source_qual :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, n: int, volout: f64, tstep: i64) -> f64 {
+find_source_qual :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, q: ^Quality, n: int, volout: f64, tstep: i64) -> f64 #no_bounds_check {
 	if q.kind != .CHEM do return 0
 	if !net.has_source[n] do return 0
 	if net.source_c0[n] == 0 do return 0
@@ -526,7 +525,7 @@ find_source_qual :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Tim
 }
 
 // source_qual: the source's strength now, in the engine's units.
-source_qual :: proc "contextless" (net: ^Network, t: ^Times, q: ^Quality, n: int) -> f64 {
+source_qual :: proc "contextless" (net: ^Network, t: ^Times, q: ^Quality, n: int) -> f64 #no_bounds_check {
 	c := net.source_c0[n]
 	if net.source_type[n] == .MASS {
 		c /= 60 // per minute to per second
@@ -581,7 +580,7 @@ react_tanks :: proc "contextless" (net: ^Network, q: ^Quality, t: ^Times, dt: i6
 // or mass transfer coefficient (zero order) at the current flow; sc3 is
 // the Schmidt number to the 0.333. (EPANET's piperate; q.pipe_rate is
 // something else, the average reaction rate reported per pipe.)
-wall_rate_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality, k: int, sc3: f64) -> f64 {
+wall_rate_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Quality, k: int, sc3: f64) -> f64 #no_bounds_check {
 	d := net.diam[k]
 	if q.sc == 0 {
 		if q.wall_order == 0 do return BIG
@@ -609,7 +608,7 @@ wall_rate_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Qual
 
 PI : f64 : 3.14159265358979323846
 
-pipe_react :: proc "contextless" (net: ^Network, q: ^Quality, t: ^Times, k: int, c, v: f64, dt: i64) -> f64 {
+pipe_react :: proc "contextless" (net: ^Network, q: ^Quality, t: ^Times, k: int, c, v: f64, dt: i64) -> f64 #no_bounds_check {
 	if q.kind == .AGE {
 		dc := f64(dt) / 3600
 		return max(0, c + dc)
@@ -626,7 +625,7 @@ pipe_react :: proc "contextless" (net: ^Network, q: ^Quality, t: ^Times, k: int,
 	return max(0, c + dc)
 }
 
-tank_react :: proc "contextless" (q: ^Quality, t: ^Times, c, v, kb: f64, dt: i64) -> f64 {
+tank_react :: proc "contextless" (q: ^Quality, t: ^Times, c, v, kb: f64, dt: i64) -> f64 #no_bounds_check {
 	dc: f64
 	if q.kind == .AGE {
 		dc = f64(dt) / 3600
@@ -640,7 +639,7 @@ tank_react :: proc "contextless" (q: ^Quality, t: ^Times, c, v, kb: f64, dt: i64
 
 // bulk_rate: kb times the reaction potential at concentration c for the
 // given order (0, Michaelis-Menten below 0, or n-th order).
-bulk_rate :: proc "contextless" (q: ^Quality, c0, kb, order: f64) -> f64 {
+bulk_rate :: proc "contextless" (q: ^Quality, c0, kb, order: f64) -> f64 #no_bounds_check {
 	c := c0
 	if order == 0 {
 		c = 1
@@ -667,7 +666,7 @@ bulk_rate :: proc "contextless" (q: ^Quality, c0, kb, order: f64) -> f64 {
 	return kb * c
 }
 
-wall_rate :: proc "contextless" (net: ^Network, q: ^Quality, c, d, kw0, kf0: f64) -> f64 {
+wall_rate :: proc "contextless" (net: ^Network, q: ^Quality, c, d, kw0, kf0: f64) -> f64 #no_bounds_check {
 	kw, kf := kw0, kf0
 	if kw == 0 || d == 0 do return 0
 	if q.wall_order == 0 {
@@ -684,7 +683,7 @@ wall_rate :: proc "contextless" (net: ^Network, q: ^Quality, c, d, kw0, kf0: f64
 // mix_tank: the tank's quality after this step's flows, by its mixing
 // model. tank_mix1..4 keep EPANET's names: complete mix, two
 // compartments, first in first out, last in first out.
-mix_tank :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, n: int, volin, massin, volout: f64) -> f64 {
+mix_tank :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, n: int, volin, massin, volout: f64) -> f64 #no_bounds_check {
 	i := n - net.njuncs
 	vnet := volin - volout
 	switch net.tank_mix[i] {
@@ -701,7 +700,7 @@ mix_tank :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, n: int, volin, ma
 }
 
 // A completely mixed tank: one segment.
-tank_mix1 :: proc "contextless" (net: ^Network, q: ^Quality, i: int, vin, win, vnet: f64) {
+tank_mix1 :: proc "contextless" (net: ^Network, q: ^Quality, i: int, vin, win, vnet: f64) #no_bounds_check {
 	s := q.segs
 	k := net.nlinks + i
 	if s.first[k] == 0 do return
@@ -719,7 +718,7 @@ tank_mix1 :: proc "contextless" (net: ^Network, q: ^Quality, i: int, vin, win, v
 
 // Two compartments: a mixing zone at the inlet (the last segment) and a
 // stagnant zone behind it (the first).
-tank_mix2 :: proc "contextless" (net: ^Network, q: ^Quality, i: int, vin, win, vnet: f64) {
+tank_mix2 :: proc "contextless" (net: ^Network, q: ^Quality, i: int, vin, win, vnet: f64) #no_bounds_check {
 	s := q.segs
 	k := net.nlinks + i
 	if s.last[k] == 0 || s.first[k] == 0 do return
@@ -760,7 +759,7 @@ tank_mix2 :: proc "contextless" (net: ^Network, q: ^Quality, i: int, vin, win, v
 }
 
 // First in, first out: a plug flow tank.
-tank_mix3 :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, i: int, vin, win, vnet: f64) {
+tank_mix3 :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, i: int, vin, win, vnet: f64) #no_bounds_check {
 	s := q.segs
 	k := net.nlinks + i
 	if s.last[k] == 0 || s.first[k] == 0 do return
@@ -787,7 +786,7 @@ tank_mix3 :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, i: int, vin, win
 }
 
 // Last in, first out: what came in last leaves first.
-tank_mix4 :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, i: int, vin, win, vnet0: f64) {
+tank_mix4 :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality, i: int, vin, win, vnet0: f64) #no_bounds_check {
 	s := q.segs
 	k := net.nlinks + i
 	vnet := vnet0
@@ -877,7 +876,7 @@ eval_mass_balance :: proc "contextless" (net: ^Network, q: ^Quality) {
 	q.balance.ratio = massin == 0 ? 1 : massout / massin
 }
 
-stored_mass :: proc "contextless" (net: ^Network, q: ^Quality) -> f64 {
+stored_mass :: proc "contextless" (net: ^Network, q: ^Quality) -> f64 #no_bounds_check {
 	s := q.segs
 	total := 0.0
 	for k in 1 ..= net.nlinks do add_chain_mass(s, k, &total)

@@ -171,14 +171,17 @@ Project_C :: struct {
 // EPANET's in place, the scalars are copied in and (unview) back out.
 Views :: Project
 
-// The engine keeps a little scratch with its solvers — the rule
-// engine's list of waiting actions, the quality sort's in-degrees and
-// stack — which the bridge has no struct for: one buffer each for the
-// process, grown as a view needs.
+// The engine keeps a little state with its solvers that the bridge has
+// no struct for — the rule engine's list of waiting actions, the quality
+// sort's in-degrees and stack, the period's flow per link: one buffer
+// each for the process, grown as a view needs, which persists from one
+// call to the next as the engine's own would.
 @(private = "file")
 pending_buf: []Pending
 @(private = "file")
-indegree_buf, stack_buf: []i32
+indegree_buf, stack_buf, up_buf, down_buf: []i32
+@(private = "file")
+link_q_buf: []f64
 
 view_buffer :: proc(buf: ^[]$T, n: int) -> []T {
 	if len(buf^) < n {
@@ -301,6 +304,7 @@ view :: proc(p: ^Project_C) -> (v: Views) {
 			pipe_rate = q.pipe_rate[:nl + 1], source_mass = q.source_mass[:nn + 1],
 			flow_dir = q.flow_dir[:nl + 1], sorted = q.sorted[:nn + 1],
 			indegree = view_buffer(&indegree_buf, nn + 1), stack = view_buffer(&stack_buf, nn + 1),
+			up = view_buffer(&up_buf, nl + 1), down = view_buffer(&down_buf, nl + 1), link_q = view_buffer(&link_q_buf, nl + 1),
 			wbulk = q.wbulk, wwall = q.wwall, wtank = q.wtank, wsource = q.wsource, source_qual = q.source_qual,
 			balance = {q.initial, q.inflow, q.outflow, q.reacted, q.final, q.ratio, int(q.seg_count)},
 			segs = q.segs,

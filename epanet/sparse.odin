@@ -8,6 +8,9 @@ package epanet
 //   2. a minimum-degree ordering of the junctions (genmmd)
 //   3. fill-in: the extra nonzeros elimination creates, added as links
 //   4. the column structure (xlnz, nzsub, lnz), rows sorted
+//
+// The passes over the adjacency run without bounds checks: an entry
+// comes from adj_push, a node or link from the graph.
 
 // Graph is a network's links as node pairs. Nodes are 1..nnodes with the
 // junctions first (1..njuncs; tanks and reservoirs after, and those are
@@ -38,7 +41,7 @@ Adj :: struct {
 	node, link, next: [dynamic]i32,
 }
 
-adj_push :: proc(a: ^Adj, at: int, node, link: i32) {
+adj_push :: proc(a: ^Adj, at: int, node, link: i32) #no_bounds_check {
 	append(&a.node, node)
 	append(&a.link, link)
 	append(&a.next, a.head[at])
@@ -74,7 +77,7 @@ create_sparse :: proc(g: Graph, allocator := context.allocator) -> (sp: Sparse) 
 // local_adjlists lists each node's links, skipping a link that parallels
 // an earlier one (same two ends): it maps to its twin's slot in ndx and
 // adds no entry, so the matrix has one coefficient for the pair.
-local_adjlists :: proc(g: Graph, a: ^Adj, ndx: []i32) {
+local_adjlists :: proc(g: Graph, a: ^Adj, ndx: []i32) #no_bounds_check {
 	for k in 1 ..= g.nlinks {
 		i, j := g.n1[k], g.n2[k]
 		twin := i32(0)
@@ -135,7 +138,7 @@ reorder_nodes :: proc(g: Graph, a: ^Adj, order, row: []i32) {
 // inode's neighbours are stamped once, and a new link stamps as it is
 // made, instead of scanning inode's list for every jnode (EPANET's way,
 // which was half the cost of opening a large network).
-fill_in :: proc(g: Graph, a: ^Adj, order: []i32) -> int {
+fill_in :: proc(g: Graph, a: ^Adj, order: []i32) -> int #no_bounds_check {
 	degree := make([]i32, g.nnodes + 1, context.temp_allocator)
 	for k in 1 ..= g.njuncs {
 		for e := a.head[k]; e != 0; e = a.next[e] {
@@ -173,7 +176,7 @@ fill_in :: proc(g: Graph, a: ^Adj, order: []i32) -> int {
 
 // store_sparse writes the column structure: for column i (row i's node),
 // every neighbour in a later row is a nonzero below the diagonal.
-store_sparse :: proc(g: Graph, a: ^Adj, sp: ^Sparse) {
+store_sparse :: proc(g: Graph, a: ^Adj, sp: ^Sparse) #no_bounds_check {
 	n := g.njuncs
 	sp.xlnz = make([]i32, n + 2)
 	sp.nzsub = make([]i32, sp.ncoeffs + 2)
@@ -198,7 +201,7 @@ store_sparse :: proc(g: Graph, a: ^Adj, sp: ^Sparse) {
 
 // sort_sparse puts each column's row indexes in ascending order, which
 // linsolve's column chaining needs: transposing twice sorts.
-sort_sparse :: proc(n: int, sp: ^Sparse) {
+sort_sparse :: proc(n: int, sp: ^Sparse) #no_bounds_check {
 	xlnzt := make([]i32, n + 2, context.temp_allocator)
 	nzsubt := make([]i32, sp.ncoeffs + 2, context.temp_allocator)
 	lnzt := make([]i32, sp.ncoeffs + 2, context.temp_allocator)
@@ -214,7 +217,7 @@ sort_sparse :: proc(n: int, sp: ^Sparse) {
 	transpose(n, xlnzt, nzsubt, lnzt, sp.xlnz, sp.nzsub, sp.lnz, nzt)
 }
 
-transpose :: proc "contextless" (n: int, il, jl, xl, ilt, jlt, xlt, nzt: []i32) {
+transpose :: proc "contextless" (n: int, il, jl, xl, ilt, jlt, xlt, nzt: []i32) #no_bounds_check {
 	for i in 1 ..= n do nzt[i] = 0
 	for i in 1 ..= n {
 		for k in il[i] ..< il[i + 1] {

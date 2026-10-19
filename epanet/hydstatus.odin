@@ -5,11 +5,12 @@ package epanet
 // asked for more than its shutoff head closes, a pressure valve moves
 // between open, active and closed, a flow control valve gives up when it
 // cannot hold its setting, and a link into a full tank or out of an empty
-// one is shut for this step.
+// one is shut for this step. A pass over every link a trial: unchecked,
+// as the coefficients are (hydcoeffs.odin).
 
 // valve_status re-evaluates every PRV and PSV that has a setting. Returns
 // whether any changed.
-valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool {
+valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool #no_bounds_check {
 	change := false
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]
@@ -35,7 +36,7 @@ valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Projec
 }
 
 // link_status re-evaluates check valves, pumps, FCVs and links at tanks.
-link_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool {
+link_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool #no_bounds_check {
 	change := false
 	for k in 1 ..= net.nlinks {
 		n1, n2 := net.n1[k], net.n2[k]
@@ -65,7 +66,7 @@ link_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project
 	return change
 }
 
-cv_status :: proc "contextless" (hyd: ^Hydraulics, s: Status, dh, q: f64) -> Status {
+cv_status :: proc "contextless" (hyd: ^Hydraulics, s: Status, dh, q: f64) -> Status #no_bounds_check {
 	if abs(dh) > hyd.htol {
 		if dh < -hyd.htol do return .CLOSED
 		if q < -hyd.qtol do return .CLOSED
@@ -76,7 +77,7 @@ cv_status :: proc "contextless" (hyd: ^Hydraulics, s: Status, dh, q: f64) -> Sta
 }
 
 // pump_status: dh is the head gain asked of the pump.
-pump_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, dh: f64) -> Status {
+pump_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, dh: f64) -> Status #no_bounds_check {
 	p := net.link_pump[k]
 	hmax: f64
 	if net.pump_type[p] == .CONST_HP {
@@ -89,7 +90,7 @@ pump_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, dh: 
 	return .OPEN
 }
 
-prv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: Status, hset, h1, h2: f64) -> Status {
+prv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: Status, hset, h1, h2: f64) -> Status #no_bounds_check {
 	htol := hyd.htol
 	hml := net.km[k] * (hyd.flow[k] * hyd.flow[k]) // loss when fully open
 	status := s
@@ -124,7 +125,7 @@ prv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: St
 	return status
 }
 
-psv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: Status, hset, h1, h2: f64) -> Status {
+psv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: Status, hset, h1, h2: f64) -> Status #no_bounds_check {
 	htol := hyd.htol
 	hml := net.km[k] * (hyd.flow[k] * hyd.flow[k])
 	status := s
@@ -162,7 +163,7 @@ psv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: St
 // fcv_status: reverse flow makes it XFCV; from XFCV it goes active once
 // the flow reaches the setting; an active valve whose implied loss
 // coefficient falls under its fully-open one cannot hold and is XFCV.
-fcv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: Status, h1, h2: f64) -> Status {
+fcv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: Status, h1, h2: f64) -> Status #no_bounds_check {
 	status := s
 	if h1 - h2 < -hyd.htol {
 		status = .XFCV
@@ -177,7 +178,7 @@ fcv_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, s: St
 }
 
 // tank_status: q is the flow out of (+) or into (−) tank node n.
-tank_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, n: int, q: f64) {
+tank_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int, n: int, q: f64) #no_bounds_check {
 	if hyd.status[k] <= .CLOSED do return
 	i := n - net.njuncs
 	if net.tank_area[i] == 0 do return // a reservoir

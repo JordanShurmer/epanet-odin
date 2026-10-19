@@ -13,6 +13,8 @@ package epanet
 // when the structure changes (`rewire`); values are copied in before
 // every step and the results copied out after it. What no tank or
 // reservoir reaches is left out of the project rather than refused.
+// The copies in and out, a pass over every row a step through the
+// engine's own numbering, run without bounds checks.
 
 import "base:runtime"
 import "core:strconv"
@@ -1018,7 +1020,7 @@ swap_chemical :: proc "contextless" (p: ^Project, cs: ^Chem_State) {
 // copy_in puts every column into the engine, in its units: the values
 // every step, and of the state (a link's status and setting, a tank's
 // level) what changed since the step last looked.
-copy_in :: proc "contextless" (sim: ^Sim) {
+copy_in :: proc "contextless" (sim: ^Sim) #no_bounds_check {
 	p := sim.engine
 	net, hyd := &p.net, &p.hyd
 	u := &p.ucf
@@ -1129,7 +1131,7 @@ setting_in :: proc "contextless" (p: ^Project, k: int, v: f64) -> f64 {
 }
 
 // copy_out reads the results into the out columns, in the caller's units.
-copy_out :: proc "contextless" (sim: ^Sim) {
+copy_out :: proc "contextless" (sim: ^Sim) #no_bounds_check {
 	p := sim.engine
 	net, hyd := &p.net, &p.hyd
 	u := &p.ucf
@@ -1197,7 +1199,7 @@ copy_out :: proc "contextless" (sim: ^Sim) {
 
 // levels_out puts the tanks' levels, as the step left them, in the level
 // column: the state at sim.t, where a copy or the next step starts.
-levels_out :: proc "contextless" (sim: ^Sim) {
+levels_out :: proc "contextless" (sim: ^Sim) #no_bounds_check {
 	p := sim.engine
 	net, hyd := &p.net, &p.hyd
 	for row in 0 ..< sim.nodes.count {

@@ -5,7 +5,8 @@ package epanet
 // equations from the current flows, solves for the heads, corrects the
 // flows, and asks the status checks whether anything switched; it ends
 // when the flow corrections are small and nothing switched, or when the
-// trials run out.
+// trials run out. The per-link and per-junction passes run without
+// bounds checks, as the coefficients do (hydcoeffs.odin).
 
 
 // Balance is the worst remaining error after a trial and where it is.
@@ -172,7 +173,7 @@ pswitch :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) ->
 
 // new_flows corrects every flow from the new heads and returns the
 // relative flow change (or the absolute one when the total flow is tiny).
-new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, bal: ^Balance) -> f64 {
+new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, bal: ^Balance) -> f64 #no_bounds_check {
 	qsum, dqsum := 0.0, 0.0
 	bal.max_flow_change = 0
 	bal.max_flow_link = 1
@@ -188,7 +189,7 @@ new_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, 
 }
 
 // dq = Y − P·(new head loss): the Newton step for a link's flow.
-new_link_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) {
+new_link_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) #no_bounds_check {
 	for n in net.njuncs + 1 ..= net.nnodes do hyd.node_demand[n] = 0
 
 	for k in 1 ..= net.nlinks {
@@ -220,7 +221,7 @@ new_link_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Bal
 	}
 }
 
-new_emitter_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) {
+new_emitter_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) #no_bounds_check {
 	for i in 1 ..= net.njuncs {
 		if net.ke[i] == 0 do continue
 		hloss, hgrad := emitter_headloss(net, hyd, i)
@@ -238,7 +239,7 @@ new_emitter_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^
 	}
 }
 
-new_leakage_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) {
+new_leakage_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) #no_bounds_check {
 	for i in 1 ..= net.njuncs {
 		dq := leakage_flow_change(net, hyd, i)
 		if dq == 0 do continue
@@ -252,7 +253,7 @@ new_leakage_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^
 	}
 }
 
-new_demand_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) {
+new_demand_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance, qsum, dqsum: ^f64) #no_bounds_check {
 	if hyd.demand_model == .DDA do return
 	dp := max(hyd.preq - hyd.pmin, MINPDIFF)
 	n := 1 / hyd.pexp
@@ -277,7 +278,7 @@ new_demand_flows :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^B
 
 // check_hyd_balance finds the link whose head loss disagrees most with
 // the heads at its ends.
-check_hyd_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance) {
+check_hyd_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, bal: ^Balance) #no_bounds_check {
 	bal.max_head_error = 0
 	bal.max_head_link = 1
 	headloss_coeffs(net, hyd)
@@ -310,7 +311,7 @@ has_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Proje
 
 // pda_converged: every pressure-dependent demand must agree with the
 // demand equation at the solved pressure. Also totals the shortfall.
-pda_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) -> bool {
+pda_converged :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) -> bool #no_bounds_check {
 	QTOL :: 0.0001 // cfs, about 0.05 gpm
 	converged := true
 	total_demand, total_reduction := 0.0, 0.0

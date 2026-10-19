@@ -480,12 +480,24 @@ EPANET's, and the harness says so):
 - Opening a large network spent half its time in `fill_in` asking
   whether two nodes were already linked by scanning a list; a marker
   array answers it, in the same order.
+- A second pass found the bounds checks still a tenth of every step,
+  in the per-trial passes over the links and junctions (the
+  coefficients, the flow corrections, the status checks, the copies in
+  and out) and in what transport calls: they run unchecked now too, over
+  the engine's own indexes, like the solver. And transport asked each
+  link its flow and direction on every visit from every node; the period's
+  flow per link is noted once (`up`, `down`, `link_q`), which also reads
+  better.
 
-On the 1,600-junction grid a step is a quarter faster and the engine
-opens a third faster; on Net3 a step is a sixth faster. `linsolve` and
-the quality transport are what is left, and they are EPANET's
-algorithms over EPANET's data layout: a Cholesky on the junction graph
-and a walk of every segment, both bound by memory, not arithmetic.
+Against the first measurement, on the 1,600-junction grid a step is
+30 % faster and the engine opens twice as fast; on Net3 a step is a
+quarter faster; the step loop runs 44 % fewer instructions. What is left
+is `linsolve` and the quality transport, EPANET's algorithms over EPANET's
+data layout — a Cholesky on the junction graph and a walk of every
+segment — and `pow`: bound by memory and libm, not by anything the port
+adds. The peak resident set on opening is Odin's 4 MB temporary
+allocator backing and the transient effective Model (480 bytes an
+entity), not the engine's tables; `memcheck` finds nothing lost.
 
 ## Releases
 
