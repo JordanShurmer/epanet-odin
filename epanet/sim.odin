@@ -704,7 +704,7 @@ size_quality_columns :: proc(sim: ^Sim) {
 
 // reach: which rows a tank or reservoir reaches, by a breadth-first walk
 // over every link, whatever its status.
-reach :: proc(sim: ^Sim, allocator: runtime.Allocator) -> []bool {
+reach :: proc(sim: ^Sim, allocator: runtime.Allocator) -> []bool #no_bounds_check {
 	context.allocator = allocator
 	nn, nl := sim.nodes.count, sim.links.count
 	reached := make([]bool, nn)

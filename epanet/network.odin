@@ -9,11 +9,14 @@ package epanet
 //
 // The enums carry EPANET's values, since the bridge passes them as ints.
 //
-// A proc marked #no_bounds_check indexes these arrays with the engine's
-// own numbers only — a node or link index the project made, a matrix
-// slot from create_sparse, a segment slot from the quality store — and
-// is run once a link, node or segment every trial or quality step. The
-// harness proves those numbers; the checks were a tenth of a step.
+// A proc (or a loop) marked #no_bounds_check indexes these arrays with
+// the engine's own numbers only — a node or link index the project made,
+// a matrix slot from create_sparse, a segment slot from the quality
+// store, an adjacency entry — on the step path, the open path or the
+// period's write to a file. The harness proves those numbers; the checks
+// were a tenth of a step. The reader (parse, units, validate), the editor
+// and the Model stay checked: they index with what a file or a caller
+// said.
 
 Link_Type :: enum i32 {
 	CVPIPE, // pipe with check valve

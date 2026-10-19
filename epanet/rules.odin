@@ -14,7 +14,7 @@ Pending :: struct {
 // check_rules evaluates every rule for the interval ending now (the last
 // dt seconds), carries out the actions that fire, and returns how many
 // links actually changed.
-check_rules :: proc(pr: ^Project, dt: i64) -> int {
+check_rules :: proc(pr: ^Project, dt: i64) -> int #no_bounds_check {
 	net, hyd, t := &pr.net, &pr.hyd, &pr.times
 	time1 := t.htime - dt + 1 // start of the interval
 	if len(hyd.pending) < len(net.action_link) {
@@ -36,7 +36,7 @@ check_rules :: proc(pr: ^Project, dt: i64) -> int {
 	return take_actions(pr, list[:n])
 }
 
-eval_premises :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, time1: i64, i: int) -> bool {
+eval_premises :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, time1: i64, i: int) -> bool #no_bounds_check {
 	result := true
 	for p in net.rule_premise_first[i] ..< net.rule_premise_first[i + 1] {
 		if net.premise_logop[p] == .OR {
@@ -176,7 +176,7 @@ check_value :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, p: int) -> b
 // add_actions puts rule i's actions [from, to) on the list, each link
 // once: a later rule of higher priority takes the link over. EPANET
 // prepends to its list, so the list here runs newest first too.
-add_actions :: proc "contextless" (net: ^Network, list: []Pending, n0: int, i: int, from, to: i32) -> int {
+add_actions :: proc "contextless" (net: ^Network, list: []Pending, n0: int, i: int, from, to: i32) -> int #no_bounds_check {
 	n := n0
 	for a in from ..< to {
 		link := net.action_link[a]
@@ -198,7 +198,7 @@ add_actions :: proc "contextless" (net: ^Network, list: []Pending, n0: int, i: i
 
 // take_actions carries the list out, newest first, and counts the links
 // that changed.
-take_actions :: proc "contextless" (pr: ^Project, list: []Pending) -> int {
+take_actions :: proc "contextless" (pr: ^Project, list: []Pending) -> int #no_bounds_check {
 	net, hyd := &pr.net, &pr.hyd
 	tol := 1e-3
 	n := 0

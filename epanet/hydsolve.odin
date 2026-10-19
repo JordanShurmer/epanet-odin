@@ -22,7 +22,7 @@ Balance :: struct {
 // hydsolve returns the trials taken, the convergence error and 0 or
 // Unsolvable (110: the matrix went ill-conditioned), and leaves the rest
 // of what it found in hyd.
-hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcode: int) {
+hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcode: int) #no_bounds_check {
 	net, hyd, m := &pr.net, &pr.hyd, &pr.m
 	next_check := hyd.check_freq
 	hyd.relax = 1
@@ -101,7 +101,7 @@ hydsolve :: proc "contextless" (pr: ^Project) -> (iter: int, relerr: f64, errcod
 // bad_valve: does node n belong to an active PRV, PSV or FCV? Then that
 // valve's setting cannot be met: fix its status and say so. Only the
 // first valve on the node is looked at, as EPANET looks.
-bad_valve :: proc "contextless" (pr: ^Project, n: int) -> bool {
+bad_valve :: proc "contextless" (pr: ^Project, n: int) -> bool #no_bounds_check {
 	net, hyd := &pr.net, &pr.hyd
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]
@@ -122,7 +122,7 @@ bad_valve :: proc "contextless" (pr: ^Project, n: int) -> bool {
 
 // pswitch applies the simple controls that watch a junction's pressure,
 // once a solution is in hand. Returns whether any link changed.
-pswitch :: proc "contextless" (pr: ^Project) -> bool {
+pswitch :: proc "contextless" (pr: ^Project) -> bool #no_bounds_check {
 	net, hyd := &pr.net, &pr.hyd
 	t0 := prof_begin()
 	defer prof_end(.status, t0)

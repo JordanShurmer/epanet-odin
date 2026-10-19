@@ -10,7 +10,7 @@ package epanet
 // build_adjlists lists each node's links as EPANET does: a node's run
 // holds the links in reverse order of their index (EPANET pushes each
 // on the front of a list).
-build_adjlists :: proc(net: ^Network) {
+build_adjlists :: proc(net: ^Network) #no_bounds_check {
 	nn, nl := net.nnodes, net.nlinks
 	net.adj_first = make([]i32, nn + 2)
 	net.adj_link = make([]i32, 2 * nl + 1)
@@ -50,7 +50,7 @@ free_adjlists :: proc(net: ^Network) {
 
 // unlinked names up to ten junctions no link reaches; Unconnected_Nodes
 // (233) when any.
-unlinked :: proc(p: ^Project) -> int {
+unlinked :: proc(p: ^Project) -> int #no_bounds_check {
 	net := &p.net
 	count := 0
 	for i in 1 ..= net.njuncs {
@@ -93,7 +93,7 @@ open_hyd :: proc(p: ^Project) -> int {
 		close_hyd(p)
 		return errcode
 	}
-	for i in 1 ..= nl do init_link_flow(net, hyd, i, net.init_status[i], net.kc[i])
+	#no_bounds_check for i in 1 ..= nl do init_link_flow(net, hyd, i, net.init_status[i], net.kc[i])
 	return 0
 }
 
@@ -106,7 +106,7 @@ open_hyd :: proc(p: ^Project) -> int {
 // read by nobody. (EPANET numbers the slots by link, which the bridge's
 // shadow compares, so create_sparse keeps that numbering and this is
 // done after.)
-column_order :: proc(sp: ^Sparse, njuncs, nlinks: int) {
+column_order :: proc(sp: ^Sparse, njuncs, nlinks: int) #no_bounds_check {
 	nnz := int(sp.xlnz[njuncs + 1]) - 1
 	slot := make([]i32, sp.ncoeffs + 1, context.temp_allocator) // old slot -> new
 	defer delete(slot, context.temp_allocator)
@@ -136,7 +136,7 @@ close_hyd :: proc(p: ^Project) {
 }
 
 // open_leakage turns each leaking pipe into leakage at its junctions.
-open_leakage :: proc(p: ^Project) {
+open_leakage :: proc(p: ^Project) #no_bounds_check {
 	net, hyd := &p.net, &p.hyd
 	hyd.has_leakage = false
 	for i in 1 ..= net.njuncs {
@@ -183,7 +183,7 @@ open_leakage :: proc(p: ^Project) {
 }
 
 // find_link_leakage: a pipe's leak at the current heads, for reporting.
-find_link_leakage :: proc "contextless" (p: ^Project, i: int) -> f64 {
+find_link_leakage :: proc "contextless" (p: ^Project, i: int) -> f64 #no_bounds_check {
 	net, hyd := &p.net, &p.hyd
 	if net.link_type[i] > .PIPE do return 0
 	if net.leak_area[i] == 0 && net.leak_expan[i] == 0 do return 0

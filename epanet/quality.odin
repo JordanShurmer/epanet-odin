@@ -134,7 +134,7 @@ reverse_segs :: proc "contextless" (s: ^Segments, k: int) #no_bounds_check {
 
 // init_segs gives each pipe one segment at its downstream node's quality
 // and each tank one (two for a two-compartment tank).
-init_segs :: proc(net: ^Network, q: ^Quality) {
+init_segs :: proc(net: ^Network, q: ^Quality) #no_bounds_check {
 	s := q.segs
 	for k in 1 ..= net.nlinks {
 		s.first[k] = 0
@@ -173,7 +173,7 @@ link_flow :: #force_inline proc "contextless" (hyd: ^Hydraulics, k: int) -> f64 
 
 // init_qual starts a quality run: node, tank and segment quality from
 // the initial values, the reaction factors, the sums at zero.
-init_qual :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality) {
+init_qual :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality) #no_bounds_check {
 	for i in 1 ..= net.nnodes {
 		q.node_qual[i] = q.kind == .TRACE ? 0 : net.c0[i]
 		if net.has_source[i] do q.source_mass[i] = 0
@@ -196,7 +196,7 @@ init_qual :: proc(net: ^Network, hyd: ^Hydraulics, q: ^Quality) {
 }
 
 // set_react_flag: is there anything to react?
-set_react_flag :: proc "contextless" (net: ^Network, q: ^Quality) -> bool {
+set_react_flag :: proc "contextless" (net: ^Network, q: ^Quality) -> bool #no_bounds_check {
 	if q.kind == .TRACE do return false
 	if q.kind == .AGE do return true
 	for i in 1 ..= net.nlinks {
@@ -263,7 +263,7 @@ flow_dir_changed :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, q: ^Qua
 // sort_nodes orders the nodes upstream to downstream (links with no flow
 // ignored, since they make false cycles). Returns 0, or
 // Quality_Unsolvable (120) when the sort could not finish.
-sort_nodes :: proc(net: ^Network, q: ^Quality) -> int {
+sort_nodes :: proc(net: ^Network, q: ^Quality) -> int #no_bounds_check {
 	indegree, stack := q.indegree, q.stack
 	for i in 0 ..= net.nnodes do indegree[i] = 0
 	stacksize := 0
@@ -308,7 +308,7 @@ sort_nodes :: proc(net: ^Network, q: ^Quality) -> int {
 	return numsorted < net.nnodes ? int(Error.Quality_Unsolvable) : 0
 }
 
-select_nonstack_node :: proc "contextless" (net: ^Network, q: ^Quality, numsorted: int, indegree: []i32) -> i32 {
+select_nonstack_node :: proc "contextless" (net: ^Network, q: ^Quality, numsorted: int, indegree: []i32) -> i32 #no_bounds_check {
 	for i := numsorted; i > 0; i -= 1 {
 		m := q.sorted[i]
 		for a in net.adj_first[m] ..< net.adj_first[m + 1] {

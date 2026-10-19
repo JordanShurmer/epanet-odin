@@ -218,7 +218,7 @@ saveenergy :: proc "contextless" (p: ^Project) -> int {
 
 // ── the hydraulics file ───────────────────────────────────────────────
 
-savehyd :: proc "contextless" (p: ^Project, htime: i64) -> int {
+savehyd :: proc "contextless" (p: ^Project, htime: i64) -> int #no_bounds_check {
 	net, hyd := &p.net, &p.hyd
 	f := p.out.hyd_file
 	x := scratch(max(net.nnodes, net.nlinks) + 1)
@@ -253,7 +253,7 @@ savehydstep :: proc "contextless" (p: ^Project, hydstep: i64) -> int {
 }
 
 // readhyd reads one period's results back; false at the file's end.
-readhyd :: proc "contextless" (p: ^Project, hydtime: ^i64) -> bool {
+readhyd :: proc "contextless" (p: ^Project, hydtime: ^i64) -> bool #no_bounds_check {
 	net, hyd := &p.net, &p.hyd
 	f := p.out.hyd_file
 	x := scratch(max(net.nnodes, net.nlinks) + 1)
@@ -315,7 +315,7 @@ saveoutput :: proc "contextless" (p: ^Project) -> int {
 	return 0
 }
 
-nodeoutput :: proc "contextless" (p: ^Project, j: Field, x: [^]f32, ucf: f64) -> int {
+nodeoutput :: proc "contextless" (p: ^Project, j: Field, x: [^]f32, ucf: f64) -> int #no_bounds_check {
 	net, hyd, q := &p.net, &p.hyd, &p.q
 	#partial switch j {
 	case .DEMAND:
@@ -332,7 +332,7 @@ nodeoutput :: proc "contextless" (p: ^Project, j: Field, x: [^]f32, ucf: f64) ->
 	return 0
 }
 
-linkoutput :: proc "contextless" (p: ^Project, j: Field, x: [^]f32, ucf: f64) -> int {
+linkoutput :: proc "contextless" (p: ^Project, j: Field, x: [^]f32, ucf: f64) -> int #no_bounds_check {
 	net, hyd, q := &p.net, &p.hyd, &p.q
 	#partial switch j {
 	case .FLOW:
@@ -431,7 +431,7 @@ savefinaloutput :: proc "contextless" (p: ^Project) -> int {
 // savetimestat reduces every period of a variable to one value per node
 // or link: the average, the least, the most or the range, in single
 // precision as EPANET keeps it.
-savetimestat :: proc "contextless" (p: ^Project, x: [^]f32, objtype: Header_Kind) -> int {
+savetimestat :: proc "contextless" (p: ^Project, x: [^]f32, objtype: Header_Kind) -> int #no_bounds_check {
 	net, hyd, q, o, r := &p.net, &p.hyd, &p.q, &p.out, &p.rpt
 	NV :: int(Field.QUALITY) - int(Field.DEMAND) + 1 // node variables
 	LV :: int(Field.FRICTION) - int(Field.FLOW) + 1 // link variables

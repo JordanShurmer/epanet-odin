@@ -9,7 +9,7 @@ import "core:math"
 
 // interp reads y at xx off a curve by straight lines, holding the end
 // values beyond the ends.
-interp :: proc "contextless" (x, y: []f64, xx: f64) -> f64 {
+interp :: proc "contextless" (x, y: []f64, xx: f64) -> f64 #no_bounds_check {
 	n := len(x)
 	if n == 0 do return 0
 	m := n - 1
@@ -61,7 +61,7 @@ resist_coeff :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) {
 
 // pcv_loss_coeff: a positional control valve's minor loss coefficient at
 // s percent open, from its Kv curve (or a straight line without one).
-pcv_loss_coeff :: proc "contextless" (net: ^Network, k: int, s: f64) -> f64 {
+pcv_loss_coeff :: proc "contextless" (net: ^Network, k: int, s: f64) -> f64 #no_bounds_check {
 	if s == MISSING do return 0
 	kmo := net.km[k] // fully open
 	if s >= 100 do return kmo
@@ -164,7 +164,7 @@ set_link_setting :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int,
 // demands sets every junction's demand for the current period from its
 // patterns, a reservoir's head from its pattern, and a pump's speed from
 // its utilization pattern.
-demands :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times) {
+demands :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times) #no_bounds_check {
 	t0 := prof_begin()
 	defer prof_end(.demands, t0)
 	p := (t.htime + t.pstart) / t.pstep // elapsed pattern periods
@@ -199,7 +199,7 @@ demands :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times) {
 
 // controls applies the simple controls that act on a tank level or the
 // clock. Returns how many links changed.
-controls :: proc "contextless" (pr: ^Project) -> int {
+controls :: proc "contextless" (pr: ^Project) -> int #no_bounds_check {
 	net, hyd, t := &pr.net, &pr.hyd, &pr.times
 	t0 := prof_begin()
 	defer prof_end(.controls, t0)
@@ -269,7 +269,7 @@ timestep :: proc(pr: ^Project) -> i64 {
 
 // tank_timestep shortens tstep to the soonest a tank fills or drains.
 // Returns that tank's node, or 0.
-tank_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, tstep: ^i64) -> int {
+tank_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, tstep: ^i64) -> int #no_bounds_check {
 	tank_node := 0
 	for i in 1 ..= net.ntanks {
 		if net.tank_area[i] == 0 do continue
@@ -298,7 +298,7 @@ tank_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, tstep: ^i6
 
 // control_timestep shortens tstep to the soonest a simple control fires
 // and would actually change its link. Returns that control, or 0.
-control_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, tstep: ^i64) -> int {
+control_timestep :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, tstep: ^i64) -> int #no_bounds_check {
 	which := 0
 	for i in 1 ..= net.ncontrols {
 		if !net.control_enabled[i] do continue
@@ -365,7 +365,7 @@ rule_timestep :: proc(pr: ^Project, tstep: ^i64) {
 
 // tank_levels moves each tank by its net inflow over tstep seconds,
 // stopping at full or empty.
-tank_levels :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, tstep: i64) {
+tank_levels :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, tstep: i64) #no_bounds_check {
 	for i in 1 ..= net.ntanks {
 		if net.tank_area[i] == 0 do continue
 		n := net.tank_node[i]
@@ -402,7 +402,7 @@ tank_grade :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, i: int, v: f6
 
 // get_energy: the power link k is using (kW) and, for a pump, its
 // efficiency at this flow and speed.
-get_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) -> (kw, eff: f64) {
+get_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) -> (kw, eff: f64) #no_bounds_check {
 	if hyd.status[k] <= .CLOSED do return 0, 0
 	q := abs(hyd.flow[k])
 	dh := abs(hyd.head[net.n1[k]] - hyd.head[net.n2[k]])
@@ -425,7 +425,7 @@ get_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, k: int) -> (k
 	return kw, e
 }
 
-get_all_pumps_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) {
+get_all_pumps_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) #no_bounds_check {
 	for j in 1 ..= net.npumps {
 		k := int(net.pump_link[j])
 		hyd.energy[j].current_power, hyd.energy[j].current_effic = get_energy(net, hyd, k)
@@ -434,7 +434,7 @@ get_all_pumps_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics) {
 
 // add_energy charges hstep seconds of every running pump's power to its
 // statistics, at the energy price in force.
-add_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hstep: i64) {
+add_energy :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hstep: i64) #no_bounds_check {
 	dt: f64
 	if t.dur == 0 {
 		dt = 1
@@ -482,7 +482,7 @@ start_flow_balance :: proc "contextless" (hyd: ^Hydraulics) {
 }
 
 // update_flow_balance adds this period's flows, weighted by its length.
-update_flow_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hstep: i64) {
+update_flow_balance :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, hstep: i64) #no_bounds_check {
 	dt: f64
 	if t.dur == 0 {
 		dt = 1
@@ -573,7 +573,7 @@ end_flow_balance :: proc "contextless" (hyd: ^Hydraulics, t: ^Times) {
 // at their initial status, setting and flow (re-initialized when
 // initflag is set), the energy and the flow balance at zero. The file
 // positioning and result indexes are the caller's.
-init_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, initflag: int) {
+init_hyd :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, initflag: int) #no_bounds_check {
 	for i in 1 ..= net.ntanks {
 		n := net.tank_node[i]
 		hyd.tank_volume[i] = net.tank_v0[i]

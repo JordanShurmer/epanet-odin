@@ -99,7 +99,7 @@ local_adjlists :: proc(g: Graph, a: ^Adj, ndx: []i32) #no_bounds_check {
 
 // reorder_nodes numbers the junctions by minimum degree; tanks keep their
 // own index, since they are not rows of the matrix.
-reorder_nodes :: proc(g: Graph, a: ^Adj, order, row: []i32) {
+reorder_nodes :: proc(g: Graph, a: ^Adj, order, row: []i32) #no_bounds_check {
 	for k in 1 ..= g.nnodes {
 		row[k] = i32(k)
 		order[k] = i32(k)

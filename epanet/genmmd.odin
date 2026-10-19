@@ -22,7 +22,7 @@ genmmd :: proc "contextless" (
 	xadj, adjncy, invp, perm: []i32,
 	delta: int,
 	dhead, qsize, llist, marker: []i32,
-) -> (nofsub: int) {
+) -> (nofsub: int) #no_bounds_check {
 	MAXINT :: max(i32)
 	if neqns <= 0 do return 0
 
@@ -93,7 +93,7 @@ genmmd :: proc "contextless" (
 // mmdint builds the degree doubly-linked lists: dhead[d] heads the list
 // of nodes with degree d, dforw/dbakw chain it, and a node's dbakw holds
 // -d when it is first in its list.
-mmdint :: proc "contextless" (neqns: int, xadj, dhead, dforw, dbakw, qsize, llist, marker: []i32) {
+mmdint :: proc "contextless" (neqns: int, xadj, dhead, dforw, dbakw, qsize, llist, marker: []i32) #no_bounds_check {
 	for node in 1 ..= neqns {
 		dhead[node] = 0
 		qsize[node] = 1
@@ -119,7 +119,7 @@ mmdelm :: proc "contextless" (
 	mdnode: int,
 	xadj, adjncy, dhead, dforw, dbakw, qsize, llist, marker: []i32,
 	tag: i32,
-) {
+) #no_bounds_check {
 	MAXINT :: max(i32)
 	marker[mdnode] = tag
 	istrt := int(xadj[mdnode])
@@ -241,7 +241,7 @@ mmdupd :: proc "contextless" (
 	mdeg: ^int,
 	dhead, dforw, dbakw, qsize, llist, marker: []i32,
 	tag: ^i32,
-) {
+) #no_bounds_check {
 	MAXINT :: max(i32)
 	mdeg0 := mdeg^ + delta
 	elmnt := ehead
@@ -375,7 +375,7 @@ mmdupd :: proc "contextless" (
 
 // mmd_setdeg files enode under its new external degree and lowers the
 // running minimum if it beat it.
-mmd_setdeg :: proc "contextless" (enode: i32, deg0: i32, mdeg: ^int, dhead, dforw, dbakw, qsize: []i32) {
+mmd_setdeg :: proc "contextless" (enode: i32, deg0: i32, mdeg: ^int, dhead, dforw, dbakw, qsize: []i32) #no_bounds_check {
 	deg := deg0 - qsize[enode] + 1
 	fnode := dhead[deg]
 	dforw[enode] = fnode
@@ -387,7 +387,7 @@ mmd_setdeg :: proc "contextless" (enode: i32, deg0: i32, mdeg: ^int, dhead, dfor
 
 // mmdnum turns the elimination record into perm and invp: a merged node
 // is numbered right after the root of the supernode it was merged into.
-mmdnum :: proc "contextless" (neqns: int, perm, invp, qsize: []i32) {
+mmdnum :: proc "contextless" (neqns: int, perm, invp, qsize: []i32) #no_bounds_check {
 	for node in 1 ..= neqns {
 		perm[node] = qsize[node] <= 0 ? invp[node] : -invp[node]
 	}
