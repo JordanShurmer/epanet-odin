@@ -14,7 +14,8 @@ Pending :: struct {
 // check_rules evaluates every rule for the interval ending now (the last
 // dt seconds), carries out the actions that fire, and returns how many
 // links actually changed.
-check_rules :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project, dt: i64) -> int {
+check_rules :: proc(pr: ^Project, dt: i64) -> int {
+	net, hyd, t := &pr.net, &pr.hyd, &pr.times
 	time1 := t.htime - dt + 1 // start of the interval
 	if len(hyd.pending) < len(net.action_link) {
 		// rules were added since the solver opened
@@ -32,7 +33,7 @@ check_rules :: proc(net: ^Network, hyd: ^Hydraulics, t: ^Times, pr: ^Project, dt
 		}
 	}
 	if n == 0 do return 0
-	return take_actions(net, hyd, pr, list[:n])
+	return take_actions(pr, list[:n])
 }
 
 eval_premises :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, t: ^Times, time1: i64, i: int) -> bool {
@@ -197,7 +198,8 @@ add_actions :: proc "contextless" (net: ^Network, list: []Pending, n0: int, i: i
 
 // take_actions carries the list out, newest first, and counts the links
 // that changed.
-take_actions :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project, list: []Pending) -> int {
+take_actions :: proc "contextless" (pr: ^Project, list: []Pending) -> int {
+	net, hyd := &pr.net, &pr.hyd
 	tol := 1e-3
 	n := 0
 	for e := len(list) - 1; e >= 0; e -= 1 {

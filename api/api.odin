@@ -328,7 +328,7 @@ EN_runH :: proc "c" (p: ^Project, current_time: ^c.long) -> c.int {
 	context = runtime.default_context()
 	current_time^ = 0
 	if !p.open_hflag do return 103
-	t, errcode := ep.run_hyd(&p.net, &p.hyd, &p.m, &p.times, p)
+	t, errcode := ep.run_hyd(p)
 	current_time^ = c.long(t)
 	if errcode != 0 do ep.errmsg(p, errcode)
 	return c.int(errcode)
@@ -339,7 +339,7 @@ EN_nextH :: proc "c" (p: ^Project, tstep: ^c.long) -> c.int {
 	context = runtime.default_context()
 	tstep^ = 0
 	if !p.open_hflag do return 103
-	ts, errcode := ep.next_hyd(&p.net, &p.hyd, &p.times, p)
+	ts, errcode := ep.next_hyd(p)
 	tstep^ = c.long(ts)
 	if errcode != 0 {
 		ep.errmsg(p, errcode)

@@ -169,7 +169,9 @@ Sim :: struct {
 }
 
 // Chem_State is one chemical's engine state: its quality solver and the
-// network's per-chemical arrays, swapped in for its transport.
+// network's per-chemical arrays (c0, the sources, the reaction
+// coefficients), which swap_chemical puts into the Network for that
+// chemical's turn. Between steps the Network holds chemical 0's.
 Chem_State :: struct {
 	q:           Quality,
 	ucf:         f64, // the engine's quality unit to the caller's
@@ -315,17 +317,8 @@ sim_copy :: proc(sim: ^Sim, allocator := context.allocator) -> (c: Sim) {
 	c.model = sim.model
 	c.t = sim.t
 	c.nodes.count, c.links.count = sim.nodes.count, sim.links.count
-	copy(c.nodes.kind, sim.nodes.kind); copy(c.nodes.elevation, sim.nodes.elevation)
-	copy(c.nodes.demand, sim.nodes.demand); copy(c.nodes.emitter, sim.nodes.emitter)
-	copy(c.nodes.head, sim.nodes.head); copy(c.nodes.level, sim.nodes.level)
-	copy(c.nodes.min_level, sim.nodes.min_level); copy(c.nodes.max_level, sim.nodes.max_level)
-	copy(c.nodes.diameter, sim.nodes.diameter); copy(c.nodes.min_volume, sim.nodes.min_volume)
-	copy(c.links.kind, sim.links.kind); copy(c.links.from, sim.links.from); copy(c.links.to, sim.links.to)
-	copy(c.links.status, sim.links.status); copy(c.links.setting, sim.links.setting)
-	copy(c.links.length, sim.links.length); copy(c.links.diameter, sim.links.diameter)
-	copy(c.links.roughness, sim.links.roughness); copy(c.links.minor_loss, sim.links.minor_loss)
-	copy(c.links.check_valve, sim.links.check_valve); copy(c.links.pump_q, sim.links.pump_q)
-	copy(c.links.pump_h, sim.links.pump_h); copy(c.links.pump_power, sim.links.pump_power)
+	for i in 0 ..< sim.nodes.count do node_row_copy(&c.nodes, i, &sim.nodes, i)
+	for k in 0 ..< sim.links.count do link_row_copy(&c.links, k, &sim.links, k)
 	copy(c.node_entity, sim.node_entity); copy(c.link_entity, sim.link_entity)
 	c.chemicals = make([]Chemical, len(sim.chemicals), allocator)
 	for ch, ci in sim.chemicals {
@@ -375,10 +368,7 @@ node_remove :: proc(sim: ^Sim, i: int) {
 		if int(sim.links.from[k]) == i || int(sim.links.to[k]) == i do clear_link(sim, k)
 	}
 	if i != last {
-		n.kind[i] = n.kind[last]
-		n.elevation[i], n.demand[i], n.emitter[i], n.head[i] = n.elevation[last], n.demand[last], n.emitter[last], n.head[last]
-		n.level[i], n.min_level[i], n.max_level[i] = n.level[last], n.min_level[last], n.max_level[last]
-		n.diameter[i], n.min_volume[i] = n.diameter[last], n.min_volume[last]
+		node_row_copy(n, i, n, last)
 		sim.node_entity[i] = sim.node_entity[last]
 		for k in 0 ..< sim.links.count {
 			if int(sim.links.from[k]) == last do sim.links.from[k] = i32(i)
@@ -393,6 +383,16 @@ node_remove :: proc(sim: ^Sim, i: int) {
 	clear_node(sim, last)
 	n.count = last
 	sim.rewire = true
+}
+
+// node_row_copy puts row j of src in row i of dst, every column (the
+// columns are listed together here, in sim_node_room, sim_delete and
+// clear_node: a new column is an edit at each).
+node_row_copy :: proc(dst: ^Nodes, i: int, src: ^Nodes, j: int) {
+	dst.kind[i] = src.kind[j]
+	dst.elevation[i], dst.demand[i], dst.emitter[i], dst.head[i] = src.elevation[j], src.demand[j], src.emitter[j], src.head[j]
+	dst.level[i], dst.min_level[i], dst.max_level[i] = src.level[j], src.min_level[j], src.max_level[j]
+	dst.diameter[i], dst.min_volume[i] = src.diameter[j], src.min_volume[j]
 }
 
 // link_add adds a link from node `from` to node `to`, zeroed, and
@@ -437,17 +437,23 @@ link_remove :: proc(sim: ^Sim, k: int) {
 	l := &sim.links
 	last := l.count - 1
 	if k != last {
-		l.kind[k] = l.kind[last]
-		l.from[k], l.to[k] = l.from[last], l.to[last]
-		l.status[k], l.setting[k] = l.status[last], l.setting[last]
-		l.length[k], l.diameter[k], l.roughness[k], l.minor_loss[k] = l.length[last], l.diameter[last], l.roughness[last], l.minor_loss[last]
-		l.check_valve[k] = l.check_valve[last]
-		l.pump_q[k], l.pump_h[k], l.pump_power[k] = l.pump_q[last], l.pump_h[last], l.pump_power[last]
+		link_row_copy(l, k, l, last)
 		sim.link_entity[k] = sim.link_entity[last]
 	}
 	clear_link(sim, last)
 	l.count = last
 	sim.rewire = true
+}
+
+// link_row_copy puts row j of src in row i of dst, every column (listed
+// together here, in sim_link_room, sim_delete and clear_link).
+link_row_copy :: proc(dst: ^Links, i: int, src: ^Links, j: int) {
+	dst.kind[i] = src.kind[j]
+	dst.from[i], dst.to[i] = src.from[j], src.to[j]
+	dst.status[i], dst.setting[i] = src.status[j], src.setting[j]
+	dst.length[i], dst.diameter[i], dst.roughness[i], dst.minor_loss[i] = src.length[j], src.diameter[j], src.roughness[j], src.minor_loss[j]
+	dst.check_valve[i] = src.check_valve[j]
+	dst.pump_q[i], dst.pump_h[i], dst.pump_power[i] = src.pump_q[j], src.pump_h[j], src.pump_power[j]
 }
 
 // ── from a Model ──────────────────────────────────────────────────────
@@ -1248,7 +1254,7 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 	copy_out(sim)
 	prof_end(.copy_out, t0)
 	t0 = prof_begin()
-	hydstep, _ := next_hyd(net, hyd, t, p)
+	hydstep, _ := next_hyd(p)
 	levels_out(sim)
 	prof_end(.next_hyd, t0)
 	qstep: i64 = 0
@@ -1269,6 +1275,7 @@ sim_step :: proc(sim: ^Sim) -> (dt: i32, warn: Warning, err: Error) {
 		prof_end(.mass_balance, t0)
 		sim.balance[ci] = cs.q.balance
 	}
+	if len(sim.chems) > 0 do swap_chemical(p, &sim.chems[0])
 	t.qtime += qstep
 	sim.t = i32(t.htime)
 	return i32(hydstep), warn, nil
@@ -1295,7 +1302,7 @@ solve_here :: proc(sim: ^Sim) -> (warn: Warning, err: Error) {
 	t0 := prof_begin()
 	copy_in(sim)
 	prof_end(.copy_in, t0)
-	_, errcode := run_hyd(&p.net, &p.hyd, &p.m, &p.times, p)
+	_, errcode := run_hyd(p)
 	if errcode > LAST_WARNING {
 		sim.warn = .None
 		return .None, Error(errcode)

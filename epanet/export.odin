@@ -486,7 +486,7 @@ odin_hydsolve :: proc "c" (p: ^Project_C, iter: ^c.int, relerr: ^f64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	it, re, rc := hydsolve(&v.net, &v.hyd, &v.m, &v)
+	it, re, rc := hydsolve(&v)
 	iter^ = c.int(it)
 	relerr^ = re
 	unview(p, &v)
@@ -555,7 +555,7 @@ odin_checkrules :: proc "c" (p: ^Project_C, dt: i64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	n := check_rules(&v.net, &v.hyd, &v.times, &v, dt)
+	n := check_rules(&v, dt)
 	unview(p, &v)
 	return c.int(n)
 }
@@ -574,7 +574,7 @@ odin_runhyd :: proc "c" (p: ^Project_C, now: ^i64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	t, rc := run_hyd(&v.net, &v.hyd, &v.m, &v.times, &v)
+	t, rc := run_hyd(&v)
 	now^ = t
 	unview(p, &v)
 	return c.int(rc)
@@ -585,7 +585,7 @@ odin_nexthyd :: proc "c" (p: ^Project_C, tstep: ^i64) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	ts, rc := next_hyd(&v.net, &v.hyd, &v.times, &v)
+	ts, rc := next_hyd(&v)
 	tstep^ = ts
 	unview(p, &v)
 	return c.int(rc)
@@ -605,7 +605,7 @@ odin_controls :: proc "c" (p: ^Project_C) -> c.int {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	return c.int(controls(&v.net, &v.hyd, &v.times, &v))
+	return c.int(controls(&v))
 }
 
 @(export, link_name = "odin_timestep")
@@ -613,7 +613,7 @@ odin_timestep :: proc "c" (p: ^Project_C, nrules: c.int) -> i64 {
 	context = runtime.default_context()
 	defer free_all(context.temp_allocator)
 	v := view(p)
-	r := timestep(&v.net, &v.hyd, &v.times, &v, int(nrules))
+	r := timestep(&v)
 	unview(p, &v)
 	return r
 }

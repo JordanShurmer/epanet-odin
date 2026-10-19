@@ -10,7 +10,8 @@ package epanet
 
 // valve_status re-evaluates every PRV and PSV that has a setting. Returns
 // whether any changed.
-valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool #no_bounds_check {
+valve_status :: proc "contextless" (pr: ^Project) -> bool #no_bounds_check {
+	net, hyd := &pr.net, &pr.hyd
 	change := false
 	for i in 1 ..= net.nvalves {
 		k := net.valve_link[i]
@@ -36,7 +37,8 @@ valve_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Projec
 }
 
 // link_status re-evaluates check valves, pumps, FCVs and links at tanks.
-link_status :: proc "contextless" (net: ^Network, hyd: ^Hydraulics, pr: ^Project) -> bool #no_bounds_check {
+link_status :: proc "contextless" (pr: ^Project) -> bool #no_bounds_check {
+	net, hyd := &pr.net, &pr.hyd
 	change := false
 	for k in 1 ..= net.nlinks {
 		n1, n2 := net.n1[k], net.n2[k]
